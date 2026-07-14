@@ -1,0 +1,47 @@
+[tool.poetry]
+name = "echostack"
+version = "0.1.0"
+description = "Enterprise Artificial Intelligence Agent Orchestration and Real-Time Speech-to-Speech Engine"
+authors = ["EchoStack Architecture Team <architecture@echostack.io>"]
+readme = "README.md"
+packages = [{include = "backend"}]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.13"
+# API Core framework and networking
+fastapi = "^0.110.0"
+uvicorn = {extras = ["standard"], version = "^0.29.0"}
+websockets = "^13.0"
+python-multipart = "^0.0.9"
+
+# AI Agent frameworks & routing
+langchain = "^0.1.13"
+langchain-community = "^0.0.29"
+langfuse = "^2.22.1"
+google-genai = "^2.11.0" # Official Gemini GenAI SDK for Live bidirectional proxying
+ragflow-sdk = "^0.19.1"  # RAGFlow layout intelligence & OCR dataset client
+
+# Storage layers & caches
+redis = "^5.0.3"
+asyncpg = "^0.29.0"     # Async PostgreSQL connection driver
+psycopg2-binary = "^2.9.9" # Sync PostgreSQL connection driver (used by standard DB tool scripts)
+
+# Big Data Analytics & Event Streaming
+pyspark = "3.5.0"       # Distributed analytics data transforms (aligned with container version)
+aiokafka = "^0.10.0"   # Async Kafka producer & consumer for document event log processing
+
+# Authentication, models, and utility tools
+pydantic = "^2.6.4"
+pydantic-settings = "^2.2.1"
+pyjwt = "^2.8.0"        # JWT Token validation in FastAPI WebSocket proxy
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.1"
+black = "^24.3.0"
+isort = "^5.13.2"
+mypy = "^1.9.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
