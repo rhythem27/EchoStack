@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "backend"}]
 
 [tool.poetry.dependencies]
-python = ">=3.11,<3.13"
+python = ">=3.11,<3.14"
 # API Core framework and networking
 fastapi = "^0.110.0"
 uvicorn = {extras = ["standard"], version = "^0.29.0"}
@@ -19,7 +19,7 @@ langchain = "^0.1.13"
 langchain-community = "^0.0.29"
 langfuse = "^2.22.1"
 google-genai = "^2.11.0" # Official Gemini GenAI SDK for Live bidirectional proxying
-ragflow-sdk = "^0.19.1"  # RAGFlow layout intelligence & OCR dataset client
+ragflow-sdk = { version = "^0.19.1", python = ">=3.11,<3.13" }  # RAGFlow layout intelligence & OCR dataset client
 
 # Storage layers & caches
 redis = "^5.0.3"
