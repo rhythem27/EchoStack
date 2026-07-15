@@ -26,9 +26,16 @@ redis = "^5.0.3"
 asyncpg = "^0.29.0"     # Async PostgreSQL connection driver
 psycopg2-binary = "^2.9.9" # Sync PostgreSQL connection driver (used by standard DB tool scripts)
 
-# Big Data Analytics & Event Streaming
-pyspark = "3.5.0"       # Distributed analytics data transforms (aligned with container version)
-aiokafka = "^0.10.0"   # Async Kafka producer & consumer for document event log processing
+# AI Models & Document Processing
+torch = "^2.2.0"
+docling = "^2.0.0"
+sentence-transformers = "^2.5.0"
+
+# Event Streaming
+kafka-python = "^2.0.2"
+
+# Big Data Analytics
+pyspark = "3.5.0"
 
 # Authentication, models, and utility tools
 pydantic = "^2.6.4"

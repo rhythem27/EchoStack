@@ -11,12 +11,14 @@ ENV PYTHONUNBUFFERED=1 \
     POETRY_VIRTUALENVS_IN_PROJECT=true \
     POETRY_NO_INTERACTION=1
 
-# Install build dependencies, libpq (for Postgres), and java (runtime dependency for PySpark client)
+# Install build dependencies, libpq (for Postgres), and libraries for document parsing
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     curl \
-    openjdk-17-jre-headless \
+    libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry
@@ -43,13 +45,14 @@ FROM python:3.11-slim as runner
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" \
     PATH="/app/.venv/bin:$PATH"
 
-# Install runtime utilities (libpq for postgres, openjdk for local Spark driver operations)
+# Install runtime utilities (libpq for postgres, libraries for document processing)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    openjdk-17-jre-headless \
+    libgomp1 \
+    libgl1 \
+    libglib2.0-0 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 

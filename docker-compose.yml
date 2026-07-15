@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # --- PostgreSQL + pgvector Database ---
+  # --- PostgreSQL + pgvector Database (Limited to 1.0GB RAM) ---
   postgres:
     image: pgvector/pgvector:pg16
     container_name: echostack-postgres
@@ -14,15 +14,19 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    deploy:
+      resources:
+        limits:
+          memory: 1000M
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres_user} -d ${POSTGRES_DB:-echostack_db}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres_user} -d $${POSTGRES_DB:-echostack_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
     networks:
       - echostack-network
 
-  # --- Redis Caching, Session Management & Rate Limiting ---
+  # --- Redis Caching & Rate Limiting (Limited to 512MB RAM) ---
   redis:
     image: redis:7-alpine
     container_name: echostack-redis
@@ -30,6 +34,10 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,115 +46,39 @@ services:
     networks:
       - echostack-network
 
-  # --- Apache Kafka Event Broker (with ZooKeeper) ---
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    container_name: echostack-zookeeper
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    networks:
-      - echostack-network
-
+  # --- Apache Kafka with KRaft - No ZooKeeper (Limited to 1.0GB RAM) ---
   kafka:
-    image: confluentinc/cp-kafka:7.5.0
+    image: bitnami/kafka:3.5.0
     container_name: echostack-kafka
-    depends_on:
-      - zookeeper
     ports:
       - "9092:9092"
     environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # Enable KRaft mode
+      - KAFKA_CFG_NODE_ID=1
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
+      # Listener configs
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      # Single-node configuration optimizations
+      - KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
+      - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=1
+    deploy:
+      resources:
+        limits:
+          memory: 1000M
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "9092"]
+      test: ["CMD", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - echostack-network
 
-  # --- Apache Spark Analytics Cluster ---
-  spark-master:
-    image: bitnami/spark:3.5.0
-    container_name: echostack-spark-master
-    environment:
-      - SPARK_MODE=master
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-    ports:
-      - "8080:8080" # Spark Master Web UI
-      - "7077:7077" # Spark Master Internal Port
-    networks:
-      - echostack-network
-
-  spark-worker:
-    image: bitnami/spark:3.5.0
-    container_name: echostack-spark-worker
-    depends_on:
-      - spark-master
-    environment:
-      - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
-      - SPARK_WORKER_CORES=2
-      - SPARK_WORKER_MEMORY=2G
-      - SPARK_RPC_AUTHENTICATION_ENABLED=no
-    networks:
-      - echostack-network
-
-  # --- Langfuse LLM Observability & Evaluation Tracing ---
-  langfuse-server:
-    image: langfuse/langfuse:2
-    container_name: echostack-langfuse-server
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres_user}:${POSTGRES_PASSWORD:-postgres_secure_password}@postgres:5432/${POSTGRES_DB:-echostack_db}
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev_nextauth_secret_key_8492049}
-      - SALT=${SALT:-dev_salt_hash_key_9182302}
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
-      - TELEMETRY_ENABLED=false
-    networks:
-      - echostack-network
-
-  # --- Langflow Visual Agent Builder ---
-  langflow:
-    image: langflowai/langflow:1.0.19
-    container_name: echostack-langflow
-    depends_on:
-      postgres:
-        condition: service_healthy
-    ports:
-      - "7860:7860"
-    environment:
-      - LANGFLOW_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres_user}:${POSTGRES_PASSWORD:-postgres_secure_password}@postgres:5432/${POSTGRES_DB:-echostack_db}
-      # Langfuse tracing configurations automatically bound to Langflow execution runtime
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_BASE_URL=${LANGFUSE_HOST:-http://langfuse-server:3000}
-    networks:
-      - echostack-network
-
-  # --- RAGFlow Parsing & Layout OCR Engine Service Mock/Stub ---
-  # Note: A full local RAGFlow deployment requires an Elasticsearch, Milvus/MinIO, and multiple core daemons.
-  # We define the core API engine boundary here; configuration can be customized as a complete external cluster.
-  ragflow:
-    image: infiniflow/ragflow:v0.11.0
-    container_name: echostack-ragflow
-    ports:
-      - "9380:9380"
-    environment:
-      - RAGFLOW_API_KEY=${RAGFLOW_API_KEY:-ragflow_admin_secret_token}
-    networks:
-      - echostack-network
-
-  # --- FastAPI Core Ingress & WebSocket Audio Proxy ---
+  # --- FastAPI Core Ingress & WebSocket Audio Proxy (Limited to 1.5GB RAM + RTX GPU Access) ---
   fastapi-app:
     build:
       context: .
@@ -170,11 +102,17 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_HOST=${LANGFUSE_HOST}
     volumes:
       - .:/app
+    deploy:
+      resources:
+        limits:
+          memory: 1500M
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     networks:
       - echostack-network
 
