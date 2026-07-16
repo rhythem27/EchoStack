@@ -17,6 +17,7 @@ python-multipart = "^0.0.9"
 # AI Agent frameworks & routing
 langchain = "^0.1.13"
 langchain-community = "^0.0.29"
+langchain-google-genai = "*"
 langfuse = "^2.22.1"
 google-genai = "^2.11.0" # Official Gemini GenAI SDK for Live bidirectional proxying
 ragflow-sdk = { version = "^0.19.1", python = ">=3.11,<3.13" }  # RAGFlow layout intelligence & OCR dataset client

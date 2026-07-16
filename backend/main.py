@@ -3,11 +3,16 @@ import json
 import uuid
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status
+from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depends, WebSocket
 from kafka import KafkaProducer
 
 from backend.config import settings
 from backend.db import init_db_pool, close_db_pool, get_db_pool
+from backend.auth import get_redis_client, get_current_user_context
+from backend.agent import run_agent
+from backend.websocket import websocket_speech_proxy
+from pydantic import BaseModel
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +28,14 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database connection pool...")
     await init_db_pool()
     
+    logger.info("Initializing Redis connection...")
+    try:
+        redis_client = get_redis_client()
+        await redis_client.ping()
+        logger.info("Successfully connected to Redis.")
+    except Exception as e:
+        logger.error(f"Failed to connect to Redis: {e}")
+        
     logger.info("Initializing Kafka Producer...")
     try:
         kafka_producer = KafkaProducer(
@@ -41,6 +54,13 @@ async def lifespan(app: FastAPI):
     logger.info("Closing database connection pool...")
     await close_db_pool()
     
+    logger.info("Closing Redis connection...")
+    try:
+        redis_client = get_redis_client()
+        await redis_client.close()
+    except Exception as e:
+        logger.error(f"Failed to close Redis client: {e}")
+        
     if kafka_producer:
         logger.info("Closing Kafka Producer...")
         kafka_producer.close()
@@ -161,3 +181,31 @@ async def upload_document(
         "status": "PENDING",
         "message": "Document uploaded successfully. Processing started in background."
     }
+
+class AgentChatRequest(BaseModel):
+    message: str
+
+@app.post("/agent/chat")
+async def chat_with_agent(
+    request: AgentChatRequest,
+    user_context: dict = Depends(get_current_user_context)
+):
+    """
+    Triggers the LangChain agent (System 1) with the user message.
+    """
+    try:
+        response = await run_agent(request.message)
+        return {"response": response}
+    except Exception as e:
+        logger.error(f"Agent execution failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Agent execution failed: {str(e)}"
+        )
+
+@app.websocket("/ws/speech")
+async def websocket_speech(websocket: WebSocket, token: Optional[str] = None):
+    """
+    WebSocket endpoint for real-time speech-to-speech proxy.
+    """
+    await websocket_speech_proxy(websocket, token)
