@@ -5,6 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depends, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaProducer
 
 from backend.config import settings
@@ -69,6 +70,14 @@ app = FastAPI(
     title="EchoStack Core API Gateway",
     version="1.0.0",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.post("/upload-document", status_code=status.HTTP_202_ACCEPTED)
@@ -182,6 +191,30 @@ async def upload_document(
         "message": "Document uploaded successfully. Processing started in background."
     }
 
+@app.get("/documents")
+async def list_documents():
+    """
+    Retrieves all documents registered in PostgreSQL.
+    """
+    pool = await get_db_pool()
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT id, file_name, status, created_at FROM documents ORDER BY created_at DESC")
+            return [
+                {
+                    "id": str(row["id"]),
+                    "file_name": row["file_name"],
+                    "status": row["status"],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None
+                } for row in rows
+            ]
+    except Exception as e:
+        logger.error(f"Failed to fetch documents: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database query failed: {str(e)}"
+        )
+
 class AgentChatRequest(BaseModel):
     message: str
 
@@ -202,6 +235,19 @@ async def chat_with_agent(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Agent execution failed: {str(e)}"
         )
+
+@app.get("/auth/token")
+def get_debug_token():
+    """
+    Utility endpoint to retrieve a valid JWT token for the default system admin user.
+    """
+    import jwt
+    payload = {
+        "user_id": "00000000-0000-0000-0000-000000000000",
+        "role_id": 1
+    }
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+    return {"token": token}
 
 @app.websocket("/ws/speech")
 async def websocket_speech(websocket: WebSocket, token: Optional[str] = None):
