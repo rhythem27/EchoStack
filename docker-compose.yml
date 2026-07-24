@@ -106,6 +106,7 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
     volumes:
       - .:/app
+      - /app/.venv
     deploy:
       resources:
         limits:
