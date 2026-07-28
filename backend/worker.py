@@ -8,6 +8,7 @@ from kafka import KafkaConsumer
 from docling.document_converter import DocumentConverter
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from sentence_transformers import SentenceTransformer
+from langfuse.decorators import observe, langfuse_context
 
 from backend.config import settings
 from backend.db import init_db_pool, close_db_pool, get_db_pool
@@ -69,6 +70,7 @@ class IngestionWorker:
         finally:
             self.consumer.close()
 
+    @observe(name="document-ingestion-worker", as_type="span")
     async def process_event(self, payload: dict):
         doc_id_str = payload.get("doc_id")
         user_id_str = payload.get("user_id")
@@ -78,6 +80,12 @@ class IngestionWorker:
         if not all([doc_id_str, user_id_str, file_path]):
             logger.error(f"Incomplete event payload ignored: {payload}")
             return
+
+        langfuse_context.update_current_observation(
+            name="document-ingestion-worker",
+            input={"doc_id": doc_id_str, "file_name": file_name},
+            metadata={"user_id": user_id_str, "file_path": file_path}
+        )
 
         doc_uuid = uuid.UUID(doc_id_str)
         pool = await get_db_pool()
@@ -117,7 +125,6 @@ class IngestionWorker:
             logger.info(f"Generating {len(chunks)} embeddings on GPU via BAAI/bge-small-en-v1.5...")
             texts = [chunk.page_content for chunk in chunks]
             
-            # Compute embeddings in executor to prevent freezing the event loop
             embeddings = await self.loop.run_in_executor(
                 self.executor,
                 lambda: self.embed_model.encode(texts, convert_to_numpy=True).tolist()
@@ -128,7 +135,6 @@ class IngestionWorker:
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     for chunk, embedding in zip(chunks, embeddings):
-                        # Convert float list to pgvector string format '[v1, v2, ...]'
                         vector_str = "[" + ",".join(map(str, embedding)) + "]"
                         await conn.execute(
                             """
@@ -145,16 +151,17 @@ class IngestionWorker:
                     )
             
             logger.info(f"Ingestion pipeline completed successfully for document {doc_id_str}.")
+            langfuse_context.update_current_observation(output={"status": "COMPLETE", "chunks": len(chunks)})
 
         except Exception as e:
             logger.error(f"Ingestion processing failed for document {doc_id_str}: {e}")
+            langfuse_context.update_current_observation(output={"status": "FAILED", "error": str(e)})
             async with pool.acquire() as conn:
                 await conn.execute(
                     "UPDATE documents SET status = 'FAILED' WHERE id = $1",
                     doc_uuid
                 )
         finally:
-            # Clean up the temp file to save disk space
             if os.path.exists(file_path):
                 try:
                     os.remove(file_path)
@@ -168,6 +175,10 @@ async def main():
     try:
         await worker.start()
     finally:
+        try:
+            langfuse_context.flush()
+        except Exception as e:
+            logger.error(f"Failed to flush Langfuse context in worker: {e}")
         await close_db_pool()
 
 if __name__ == "__main__":

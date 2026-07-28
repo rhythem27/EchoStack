@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depends, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaProducer
+from langfuse.decorators import observe, langfuse_context
 
 from backend.config import settings
 from backend.db import init_db_pool, close_db_pool, get_db_pool
@@ -47,11 +48,16 @@ async def lifespan(app: FastAPI):
         )
     except Exception as e:
         logger.error(f"Failed to initialize Kafka Producer: {e}")
-        # Note: In development we continue, but in production this might be a fatal error.
     
     yield
     
     # Shutdown lifecycle
+    logger.info("Flushing Langfuse telemetry context...")
+    try:
+        langfuse_context.flush()
+    except Exception as e:
+        logger.error(f"Failed to flush Langfuse context: {e}")
+
     logger.info("Closing database connection pool...")
     await close_db_pool()
     
@@ -81,6 +87,7 @@ app.add_middleware(
 )
 
 @app.post("/upload-document", status_code=status.HTTP_202_ACCEPTED)
+@observe(name="upload-document-api")
 async def upload_document(
     file: UploadFile = File(...),
     user_id: str = Form("00000000-0000-0000-0000-000000000000")
@@ -89,6 +96,12 @@ async def upload_document(
     Saves an uploaded document PDF locally, registers a PENDING entry in PostgreSQL,
     and publishes an ingestion job payload to Kafka.
     """
+    langfuse_context.update_current_trace(
+        name="upload-document-api",
+        user_id=user_id,
+        tags=["api", "upload", "ingestion"],
+        metadata={"file_name": file.filename}
+    )
     # 1. Basic validation
     if not file.filename.endswith(".pdf"):
         raise HTTPException(
@@ -219,6 +232,7 @@ class AgentChatRequest(BaseModel):
     message: str
 
 @app.post("/agent/chat")
+@observe(name="chat-with-agent-api")
 async def chat_with_agent(
     request: AgentChatRequest,
     user_context: dict = Depends(get_current_user_context)
@@ -226,8 +240,14 @@ async def chat_with_agent(
     """
     Triggers the LangChain agent (System 1) with the user message.
     """
+    uid = str(user_context.get("user_id", "guest"))
+    langfuse_context.update_current_trace(
+        name="chat-with-agent-api",
+        user_id=uid,
+        tags=["api", "chat"]
+    )
     try:
-        response = await run_agent(request.message)
+        response = await run_agent(request.message, user_id=uid)
         return {"response": response}
     except Exception as e:
         logger.error(f"Agent execution failed: {e}")

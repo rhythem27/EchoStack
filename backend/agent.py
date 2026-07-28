@@ -30,6 +30,7 @@ def get_embedding_model() -> SentenceTransformer:
 
 
 @tool("query_user_analytics")
+@observe(name="query_user_analytics", as_type="span")
 async def query_user_analytics() -> str:
     """
     Queries the user analytics database to retrieve engagement insights,
@@ -39,6 +40,11 @@ async def query_user_analytics() -> str:
     permissions = current_user_permissions.get()
 
     logger.info(f"Tool query_user_analytics called by user: {user_id}")
+
+    langfuse_context.update_current_observation(
+        input={"user_id": str(user_id) if user_id else None},
+        metadata={"permission_checked": "can_query_analytics"}
+    )
 
     # RBAC Validation
     if not permissions or not permissions.get("can_query_analytics", False):
@@ -59,25 +65,27 @@ async def query_user_analytics() -> str:
                 return f"No user analytics data found for user ID: {user_id}."
 
             import json
-            # top_topics can be a string or a list/dict depending on how asyncpg parses JSONB
             top_topics_val = row["top_topics"]
             if isinstance(top_topics_val, str):
                 topics_str = top_topics_val
             else:
                 topics_str = json.dumps(top_topics_val)
 
-            return (
+            res = (
                 f"User Analytics Insights:\n"
                 f"- Total Interactions: {row['total_interactions']}\n"
                 f"- Top Topics: {topics_str}\n"
                 f"- Last Updated: {row['last_updated_at']}"
             )
+            langfuse_context.update_current_observation(output=res)
+            return res
     except Exception as e:
         logger.error(f"Error querying user analytics: {e}")
         return f"Error executing query: {str(e)}"
 
 
 @tool("rag_knowledge_search")
+@observe(name="rag_knowledge_search", as_type="retriever")
 async def rag_knowledge_search(query: str) -> str:
     """
     Performs a semantic similarity search against the vector knowledge base using the query text
@@ -87,6 +95,11 @@ async def rag_knowledge_search(query: str) -> str:
     permissions = current_user_permissions.get()
 
     logger.info(f"Tool rag_knowledge_search called by user {user_id} with query: '{query}'")
+
+    langfuse_context.update_current_observation(
+        input={"query": query, "user_id": str(user_id) if user_id else None},
+        metadata={"embedding_model": "BAAI/bge-small-en-v1.5", "top_k": 5}
+    )
 
     # RBAC Validation
     if not permissions or not permissions.get("can_write_knowledge", False):
@@ -100,7 +113,6 @@ async def rag_knowledge_search(query: str) -> str:
         # Generate BGE-small embedding using CUDA-accelerated model
         embed_model = get_embedding_model()
         loop = asyncio.get_running_loop()
-        # SentenceTransformer encode is a blocking operation, run in executor
         query_vector = await loop.run_in_executor(
             None,
             lambda: embed_model.encode(query, convert_to_numpy=True).tolist()
@@ -109,8 +121,6 @@ async def rag_knowledge_search(query: str) -> str:
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
-            # Query pgvector HNSW index for cosine distance (similarity = 1 - cosine_distance)
-            # Filter results by the user's documents to enforce data privacy
             rows = await conn.fetch(
                 """
                 SELECT vk.chunk_text, 1 - (vk.embedding <=> $1::vector) AS similarity
@@ -124,13 +134,16 @@ async def rag_knowledge_search(query: str) -> str:
             )
 
             if not rows:
+                langfuse_context.update_current_observation(output="No matching knowledge base documents found.")
                 return "No matching knowledge base documents found."
 
             results = []
             for idx, row in enumerate(rows):
                 results.append(f"Result {idx+1} (Similarity: {row['similarity']:.4f}):\n{row['chunk_text']}")
 
-            return "\n\n".join(results)
+            res_str = "\n\n".join(results)
+            langfuse_context.update_current_observation(output=res_str)
+            return res_str
     except Exception as e:
         logger.error(f"Error during RAG search: {e}")
         return f"Error executing search: {str(e)}"
@@ -156,7 +169,6 @@ def get_agent_executor():
         
         tools = [query_user_analytics, rag_knowledge_search]
         
-        # We use a structured chat agent which is extremely stable and handles multiple tools well
         _agent_executor = initialize_agent(
             tools=tools,
             llm=llm,
@@ -167,11 +179,22 @@ def get_agent_executor():
     return _agent_executor
 
 
-@observe()
-async def run_agent(message: str) -> str:
+@observe(name="system1-chat-agent", as_type="agent")
+async def run_agent(message: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
     """
     Executes the LangChain agent with Langfuse tracing.
     """
+    uid = user_id or (str(current_user_id.get()) if current_user_id.get() else "guest")
+    sid = session_id or f"session-{uuid.uuid4()}"
+
+    langfuse_context.update_current_trace(
+        name="system1-chat-agent",
+        user_id=uid,
+        session_id=sid,
+        tags=["system-1", "langchain-agent", "chat"],
+        input=message
+    )
+
     # Retrieve the LangChain callback handler registered under the active Langfuse trace
     langfuse_handler = langfuse_context.get_current_langchain_handler()
     callbacks = [langfuse_handler] if langfuse_handler else []
@@ -183,4 +206,6 @@ async def run_agent(message: str) -> str:
         {"input": message},
         config={"callbacks": callbacks}
     )
-    return response["output"]
+    out_str = response.get("output", "")
+    langfuse_context.update_current_trace(output=out_str)
+    return out_str

@@ -7,6 +7,7 @@ import asyncio
 import jwt
 from typing import Dict, Any, Optional
 from fastapi import WebSocket, status
+from langfuse.decorators import observe, langfuse_context
 
 from google import genai
 from google.genai import types
@@ -93,27 +94,39 @@ async def authenticate_websocket(token: str) -> dict:
         "permissions": permissions
     }
 
+@observe(name="live-tool-execution", as_type="span")
 async def execute_live_tool(name: str, args: dict, user_context: dict) -> str:
     """
     Sets local contextvars, calls the requested tool asynchronously, and returns the response.
     """
-    # Enforce thread/task-safe contextvars
     current_user_id.set(user_context["user_id"])
     current_user_permissions.set(user_context["permissions"])
+
+    langfuse_context.update_current_observation(
+        name=f"live-tool-{name}",
+        input={"tool_name": name, "args": args},
+        metadata={"user_id": str(user_context.get("user_id"))}
+    )
 
     logger.info(f"Executing Live Agent tool: {name} with args: {args}")
     try:
         if name == "query_user_analytics":
-            return await query_user_analytics.ainvoke({})
+            res = await query_user_analytics.ainvoke({})
         elif name == "rag_knowledge_search":
             query_val = args.get("query") or args.get("search_query") or ""
-            return await rag_knowledge_search.ainvoke({"query": query_val})
+            res = await rag_knowledge_search.ainvoke({"query": query_val})
         else:
-            return f"Error: Tool '{name}' is not supported."
+            res = f"Error: Tool '{name}' is not supported."
+        
+        langfuse_context.update_current_observation(output=res)
+        return res
     except Exception as e:
         logger.error(f"Error during tool execution: {e}")
-        return f"Error executing tool: {str(e)}"
+        err_msg = f"Error executing tool: {str(e)}"
+        langfuse_context.update_current_observation(output=err_msg)
+        return err_msg
 
+@observe(name="speech-to-speech-session", as_type="agent")
 async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = None):
     """
     Bidirectional WebSocket proxy connecting React client PCM stream to Gemini Live API.
@@ -125,13 +138,18 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         logger.info(f"WebSocket client authenticated successfully. User: {user_context['user_id']}")
     except Exception as auth_err:
         logger.warning(f"WebSocket connection rejected: {auth_err}")
-        # Close with policy violation code
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    # Ensure contextvars are initialized for this parent task
     current_user_id.set(user_context["user_id"])
     current_user_permissions.set(user_context["permissions"])
+
+    langfuse_context.update_current_trace(
+        name="speech-to-speech-session",
+        user_id=str(user_context["user_id"]),
+        tags=["speech-to-speech", "gemini-live", "system-2"],
+        metadata={"role_id": user_context["role_id"]}
+    )
 
     # Initialize google-genai client
     api_key = os.environ.get("GEMINI_API_KEY")
