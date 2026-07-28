@@ -288,6 +288,11 @@ function App() {
           addLog('Registering AudioWorklet script...', 'info');
           await audioCtx.audioWorklet.addModule('/audio-processor.js');
 
+          if (audioCtx.state === 'closed') {
+            addLog('AudioContext closed prior to Worklet initialization.', 'warning');
+            return;
+          }
+
           const workletNode = new AudioWorkletNode(audioCtx, 'audio-processor');
           workletNodeRef.current = workletNode;
 

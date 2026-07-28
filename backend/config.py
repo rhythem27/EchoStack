@@ -8,13 +8,13 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "dev_secret_jwt_sign_key_98374591"
 
     # PostgreSQL Database URL
-    DATABASE_URL: str = "postgresql://postgres_user:postgres_secure_password@postgres:5432/echostack_db"
+    DATABASE_URL: str = "postgresql://postgres_user:postgres_secure_password@localhost:5432/echostack_db"
 
     # Redis Connection URL
-    REDIS_URL: str = "redis://redis:6379/0"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     # Apache Kafka Broker configuration
-    KAFKA_BOOTSTRAP_SERVERS: str = "kafka:9092"
+    KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
     KAFKA_INGESTION_TOPIC: str = "document.ingestion.events"
 
     # Ingestion configurations
