@@ -16,6 +16,7 @@ import {
   AlertCircle,
   ArrowRight
 } from 'lucide-react';
+import KnowledgeManager from './components/KnowledgeManager';
 import './App.css';
 
 // Converts Float32 audio samples back into 16-bit PCM arrays
@@ -73,6 +74,7 @@ function App() {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
+  const [isKmOpen, setIsKmOpen] = useState(false);
   
   // Metrics & Visual Logs
   const [logs, setLogs] = useState([]);
@@ -107,8 +109,6 @@ function App() {
       const payloadDecoded = JSON.parse(window.atob(payloadBase64));
       addLog(`Authenticated successfully. User UUID: ${payloadDecoded.user_id}`, 'info');
 
-      // Query permissions mapping using dummy fetch or simulated endpoint (permissions cached in redis)
-      // Since it's development, we'll populate state
       setPermissions({
         can_access_admin_tools: true,
         can_query_analytics: true,
@@ -138,24 +138,28 @@ function App() {
 
   // Poll for document updates when active
   useEffect(() => {
-    if (activeTab === 'documents') {
+    if (activeTab === 'documents' || isKmOpen) {
       fetchDocuments();
       const interval = setInterval(fetchDocuments, 4000);
       return () => clearInterval(interval);
     }
-  }, [activeTab, backendUrl]);
+  }, [activeTab, isKmOpen, backendUrl]);
 
   // Load documents list on start
   useEffect(() => {
     fetchDocuments();
   }, [backendUrl]);
 
-  // 3. Document Upload (PDF RAG ingestion)
+  // 3. Document Upload (Multi-Format RAG ingestion)
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    if (!file.name.endsWith('.pdf')) {
-      setUploadStatus({ type: 'error', text: 'Only PDF documents are supported.' });
+    
+    const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.pptx'];
+    const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+    
+    if (!allowed.includes(ext)) {
+      setUploadStatus({ type: 'error', text: `Unsupported file format. Allowed: ${allowed.join(', ')}` });
       return;
     }
 
@@ -462,16 +466,16 @@ function App() {
             <div className="drag-upload-zone">
               <input 
                 type="file" 
-                id="pdf-uploader" 
-                accept=".pdf" 
+                id="doc-uploader" 
+                accept=".pdf,.docx,.txt,.csv,.md,.pptx" 
                 onChange={handleFileUpload} 
                 className="hidden-input" 
                 disabled={uploading}
               />
-              <label htmlFor="pdf-uploader" className="upload-label">
+              <label htmlFor="doc-uploader" className="upload-label">
                 <FileUp size={36} className="upload-icon-pulse" />
-                <span>Drag or click to upload PDF</span>
-                <span className="file-desc">Requires .pdf format</span>
+                <span>Drag or click to upload Document</span>
+                <span className="file-desc">Supports .pdf, .docx, .txt, .csv, .md, .pptx</span>
               </label>
             </div>
 
@@ -483,13 +487,23 @@ function App() {
             )}
 
             <div className="document-list-container">
-              <h3>Indexed System Files</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3>Indexed System Files</h3>
+                <button 
+                  onClick={() => setIsKmOpen(true)}
+                  className="btn btn-secondary py-half px-2 text-xs flex items-center gap-1"
+                  style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
+                >
+                  <Database size={13} /> Manage KB
+                </button>
+              </div>
+
               {documents.length === 0 ? (
-                <div className="list-empty">No documents found. Upload a PDF to start RAG.</div>
+                <div className="list-empty">No documents found. Upload a file to start RAG.</div>
               ) : (
                 <ul className="doc-list">
                   {documents.map((doc) => (
-                    <li key={doc.id} className="doc-item">
+                    <li key={doc.id} className="doc-item" onClick={() => setIsKmOpen(true)} style={{ cursor: 'pointer' }}>
                       <FileText size={18} className="doc-icon" />
                       <div className="doc-details">
                         <span className="doc-name">{doc.file_name}</span>
@@ -681,6 +695,14 @@ function App() {
         </section>
 
       </div>
+
+      {/* Knowledge Base Explorer Modal */}
+      <KnowledgeManager 
+        backendUrl={backendUrl} 
+        isOpen={isKmOpen} 
+        onClose={() => setIsKmOpen(false)} 
+        onRefresh={fetchDocuments}
+      />
     </div>
   );
 }

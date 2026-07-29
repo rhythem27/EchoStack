@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS vector_knowledge (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     doc_id UUID REFERENCES documents(id) ON DELETE CASCADE,
     chunk_text TEXT NOT NULL,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    fts TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', chunk_text)) STORED,
     embedding VECTOR(384) NOT NULL -- Optimized for BAAI/bge-small-en-v1.5 (384 dimensions)
 );
 
@@ -66,6 +68,11 @@ CREATE INDEX IF NOT EXISTS idx_vector_knowledge_hnsw_cosine
 ON vector_knowledge 
 USING hnsw (embedding vector_cosine_ops)
 WITH (m = 16, ef_construction = 64);
+
+-- 10. Create Full-Text Search (GIN) Index for Keyword Search
+CREATE INDEX IF NOT EXISTS idx_vector_knowledge_fts 
+ON vector_knowledge 
+USING gin (fts);
 
 -- ==============================================================================
 -- Seeds and Default System Data Initialization

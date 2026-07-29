@@ -88,8 +88,8 @@ async def query_user_analytics() -> str:
 @observe(name="rag_knowledge_search", as_type="retriever")
 async def rag_knowledge_search(query: str) -> str:
     """
-    Performs a semantic similarity search against the vector knowledge base using the query text
-    to retrieve relevant document chunks uploaded by the user.
+    Performs a hybrid vector & full-text keyword search against the knowledge base using
+    Reciprocal Rank Fusion (RRF) to combine semantic similarity and exact term matching.
     """
     user_id = current_user_id.get()
     permissions = current_user_permissions.get()
@@ -98,7 +98,7 @@ async def rag_knowledge_search(query: str) -> str:
 
     langfuse_context.update_current_observation(
         input={"query": query, "user_id": str(user_id) if user_id else None},
-        metadata={"embedding_model": "BAAI/bge-small-en-v1.5", "top_k": 5}
+        metadata={"embedding_model": "BAAI/bge-small-en-v1.5", "search_mode": "hybrid_rrf", "top_k": 5}
     )
 
     # RBAC Validation
@@ -121,31 +121,93 @@ async def rag_knowledge_search(query: str) -> str:
 
         pool = await get_db_pool()
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
+            # 1. Semantic Vector Cosine Distance Search
+            vector_rows = await conn.fetch(
                 """
-                SELECT vk.chunk_text, 1 - (vk.embedding <=> $1::vector) AS similarity
+                SELECT vk.id, vk.chunk_text, vk.metadata, 1 - (vk.embedding <=> $1::vector) AS similarity
                 FROM vector_knowledge vk
                 JOIN documents d ON vk.doc_id = d.id
                 WHERE d.user_id = $2
                 ORDER BY vk.embedding <=> $1::vector
-                LIMIT $3
+                LIMIT 20
                 """,
-                vector_str, user_id, 5
+                vector_str, user_id
             )
 
-            if not rows:
+            # 2. PostgreSQL Full-Text Keyword Search
+            keyword_rows = await conn.fetch(
+                """
+                SELECT vk.id, vk.chunk_text, vk.metadata, ts_rank(vk.fts, plainto_tsquery('english', $1)) AS text_rank
+                FROM vector_knowledge vk
+                JOIN documents d ON vk.doc_id = d.id
+                WHERE d.user_id = $2 AND (vk.fts @@ plainto_tsquery('english', $1) OR vk.chunk_text ILIKE '%' || $1 || '%')
+                ORDER BY text_rank DESC
+                LIMIT 20
+                """,
+                query, user_id
+            )
+
+            if not vector_rows and not keyword_rows:
                 langfuse_context.update_current_observation(output="No matching knowledge base documents found.")
                 return "No matching knowledge base documents found."
 
+            # 3. Reciprocal Rank Fusion (RRF)
+            import json
+            scores = {}
+            k_const = 60
+
+            for rank, row in enumerate(vector_rows, start=1):
+                doc_key = str(row['id'])
+                meta = row['metadata']
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                scores[doc_key] = {
+                    "chunk_text": row['chunk_text'],
+                    "metadata": meta or {},
+                    "vector_rank": rank,
+                    "keyword_rank": None,
+                    "similarity": float(row['similarity'])
+                }
+
+            for rank, row in enumerate(keyword_rows, start=1):
+                doc_key = str(row['id'])
+                meta = row['metadata']
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                if doc_key not in scores:
+                    scores[doc_key] = {
+                        "chunk_text": row['chunk_text'],
+                        "metadata": meta or {},
+                        "vector_rank": None,
+                        "keyword_rank": rank,
+                        "similarity": 0.0
+                    }
+                else:
+                    scores[doc_key]["keyword_rank"] = rank
+
+            # Compute combined RRF score
+            for doc_key, item in scores.items():
+                v_score = 1.0 / (k_const + item["vector_rank"]) if item["vector_rank"] is not None else 0.0
+                k_score = 1.0 / (k_const + item["keyword_rank"]) if item["keyword_rank"] is not None else 0.0
+                item["rrf_score"] = v_score + k_score
+
+            # Sort candidate chunks by RRF score
+            sorted_candidates = sorted(scores.values(), key=lambda x: x["rrf_score"], reverse=True)[:5]
+
             results = []
-            for idx, row in enumerate(rows):
-                results.append(f"Result {idx+1} (Similarity: {row['similarity']:.4f}):\n{row['chunk_text']}")
+            for idx, item in enumerate(sorted_candidates):
+                sec_title = item['metadata'].get('section_title', 'General')
+                fmt = item['metadata'].get('file_format', 'txt').upper()
+                results.append(
+                    f"Result {idx+1} [Format: {fmt} | Section: {sec_title} | RRF Score: {item['rrf_score']:.4f}]:\n"
+                    f"{item['chunk_text']}"
+                )
 
             res_str = "\n\n".join(results)
             langfuse_context.update_current_observation(output=res_str)
             return res_str
     except Exception as e:
-        logger.error(f"Error during RAG search: {e}")
+        logger.error(f"Error during Hybrid RAG search: {e}")
         return f"Error executing search: {str(e)}"
 
 

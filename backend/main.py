@@ -102,11 +102,12 @@ async def upload_document(
         tags=["api", "upload", "ingestion"],
         metadata={"file_name": file.filename}
     )
-    # 1. Basic validation
-    if not file.filename.endswith(".pdf"):
+    # 1. Multi-format validation
+    allowed_exts = (".pdf", ".docx", ".txt", ".csv", ".md", ".pptx")
+    if not file.filename.lower().endswith(allowed_exts):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unsupported file format. Only PDF documents are supported."
+            detail=f"Unsupported file format. Supported extensions are: {', '.join(allowed_exts)}"
         )
     
     try:
@@ -158,7 +159,6 @@ async def upload_document(
 
     # 3. Publish payload event to Kafka
     if kafka_producer is None:
-        # If Kafka was not ready during startup, try to reconnect
         try:
             kafka_producer = KafkaProducer(
                 bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
@@ -185,7 +185,6 @@ async def upload_document(
         kafka_producer.send(settings.KAFKA_INGESTION_TOPIC, event_payload)
         kafka_producer.flush()
     except Exception as e:
-        # Note: Typically, we would fail-back or retry, or mark the document as FAILED
         logger.error(f"Failed to publish event to Kafka: {e}")
         async with pool.acquire() as conn:
             await conn.execute(
@@ -207,18 +206,27 @@ async def upload_document(
 @app.get("/documents")
 async def list_documents():
     """
-    Retrieves all documents registered in PostgreSQL.
+    Retrieves all documents registered in PostgreSQL along with chunk counts.
     """
     pool = await get_db_pool()
     try:
         async with pool.acquire() as conn:
-            rows = await conn.fetch("SELECT id, file_name, status, created_at FROM documents ORDER BY created_at DESC")
+            rows = await conn.fetch(
+                """
+                SELECT d.id, d.file_name, d.status, d.created_at, COUNT(vk.id) AS chunk_count
+                FROM documents d
+                LEFT JOIN vector_knowledge vk ON d.id = vk.doc_id
+                GROUP BY d.id, d.file_name, d.status, d.created_at
+                ORDER BY d.created_at DESC
+                """
+            )
             return [
                 {
                     "id": str(row["id"]),
                     "file_name": row["file_name"],
                     "status": row["status"],
-                    "created_at": row["created_at"].isoformat() if row["created_at"] else None
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "chunk_count": row["chunk_count"]
                 } for row in rows
             ]
     except Exception as e:
@@ -227,6 +235,139 @@ async def list_documents():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Database query failed: {str(e)}"
         )
+
+@app.get("/documents/{doc_id}/chunks")
+async def get_document_chunks(doc_id: str):
+    """
+    Retrieves chunk breakdowns and metadata tags for a specific document.
+    """
+    try:
+        doc_uuid = uuid.UUID(doc_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document UUID.")
+
+    pool = await get_db_pool()
+    try:
+        async with pool.acquire() as conn:
+            doc = await conn.fetchrow("SELECT id, file_name, status, created_at FROM documents WHERE id = $1", doc_uuid)
+            if not doc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+            rows = await conn.fetch(
+                "SELECT id, chunk_text, metadata FROM vector_knowledge WHERE doc_id = $1 ORDER BY id ASC",
+                doc_uuid
+            )
+
+            chunks = []
+            for row in rows:
+                meta = row["metadata"]
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                chunks.append({
+                    "id": str(row["id"]),
+                    "chunk_text": row["chunk_text"],
+                    "metadata": meta or {}
+                })
+
+            return {
+                "id": str(doc["id"]),
+                "file_name": doc["file_name"],
+                "status": doc["status"],
+                "created_at": doc["created_at"].isoformat() if doc["created_at"] else None,
+                "total_chunks": len(chunks),
+                "chunks": chunks
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to fetch chunks for doc {doc_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@app.delete("/documents/{doc_id}")
+async def delete_document(doc_id: str):
+    """
+    Deletes an individual document and all its associated vector chunks.
+    """
+    try:
+        doc_uuid = uuid.UUID(doc_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document UUID.")
+
+    pool = await get_db_pool()
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM documents WHERE id = $1", doc_uuid)
+            if result == "DELETE 0":
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+            return {"message": f"Document {doc_id} and its associated vectors deleted successfully."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete document {doc_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@app.delete("/documents")
+async def clear_knowledge_base():
+    """
+    Clears all documents and vector knowledge base records.
+    """
+    pool = await get_db_pool()
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM vector_knowledge")
+            await conn.execute("DELETE FROM documents")
+            return {"message": "Knowledge base cleared successfully."}
+    except Exception as e:
+        logger.error(f"Failed to clear knowledge base: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@app.post("/documents/{doc_id}/reindex")
+async def reindex_document(doc_id: str):
+    """
+    Re-indexes an existing document by clearing its vector chunks and setting status to PENDING.
+    """
+    global kafka_producer
+    try:
+        doc_uuid = uuid.UUID(doc_id)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid document UUID.")
+
+    pool = await get_db_pool()
+    try:
+        async with pool.acquire() as conn:
+            doc = await conn.fetchrow("SELECT id, user_id, file_name FROM documents WHERE id = $1", doc_uuid)
+            if not doc:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+            # Remove existing vector chunks for re-indexing
+            await conn.execute("DELETE FROM vector_knowledge WHERE doc_id = $1", doc_uuid)
+            await conn.execute("UPDATE documents SET status = 'PENDING' WHERE id = $1", doc_uuid)
+
+            # Check if file exists in upload dir
+            temp_file_name = f"{doc['id']}_{doc['file_name']}"
+            temp_file_path = os.path.join(settings.UPLOAD_DIR, temp_file_name)
+
+            if kafka_producer and os.path.exists(temp_file_path):
+                event_payload = {
+                    "doc_id": str(doc["id"]),
+                    "user_id": str(doc["user_id"]),
+                    "file_path": temp_file_path,
+                    "file_name": doc["file_name"]
+                }
+                kafka_producer.send(settings.KAFKA_INGESTION_TOPIC, event_payload)
+                kafka_producer.flush()
+
+            return {
+                "id": str(doc["id"]),
+                "status": "PENDING",
+                "message": f"Re-indexing triggered for document {doc['file_name']}."
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to re-index document {doc_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 class AgentChatRequest(BaseModel):
     message: str

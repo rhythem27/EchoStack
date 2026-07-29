@@ -99,18 +99,32 @@ class IngestionWorker:
             )
 
         try:
-            # 2. Extract layout-aware markdown via Docling (executed on thread pool)
-            logger.info(f"Running Docling converter on PDF: {file_path}...")
+            # 2. Extract layout-aware markdown via Docling with fallback for plain formats
+            logger.info(f"Running Docling converter on file ({file_name}): {file_path}...")
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"File not found at: {file_path}")
 
-            conversion_result = await self.loop.run_in_executor(
-                self.executor,
-                self.doc_converter.convert,
-                file_path
-            )
-            
-            markdown_text = conversion_result.document.export_to_markdown()
+            ext = os.path.splitext(file_name)[1].lower()
+
+            if ext in [".txt", ".csv", ".md"]:
+                try:
+                    conversion_result = await self.loop.run_in_executor(
+                        self.executor,
+                        self.doc_converter.convert,
+                        file_path
+                    )
+                    markdown_text = conversion_result.document.export_to_markdown()
+                except Exception as docling_err:
+                    logger.warning(f"Docling conversion fallback for {ext} file: {docling_err}")
+                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                        markdown_text = f.read()
+            else:
+                conversion_result = await self.loop.run_in_executor(
+                    self.executor,
+                    self.doc_converter.convert,
+                    file_path
+                )
+                markdown_text = conversion_result.document.export_to_markdown()
             
             # 3. Chunk using MarkdownHeaderTextSplitter
             logger.info("Splitting document content into markdown-header aware chunks...")
@@ -130,18 +144,30 @@ class IngestionWorker:
                 lambda: self.embed_model.encode(texts, convert_to_numpy=True).tolist()
             )
 
-            # 5. Insert chunks & embeddings in PostgreSQL via asyncpg
-            logger.info(f"Persisting vectors & chunks in Postgres vector_knowledge table...")
+            # 5. Insert chunks, metadata & embeddings in PostgreSQL via asyncpg
+            logger.info(f"Persisting vectors, metadata & chunks in Postgres vector_knowledge table...")
             async with pool.acquire() as conn:
                 async with conn.transaction():
-                    for chunk, embedding in zip(chunks, embeddings):
+                    for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                         vector_str = "[" + ",".join(map(str, embedding)) + "]"
+                        
+                        # Extract section header title if available from MarkdownHeaderTextSplitter
+                        header_title = " > ".join([v for k, v in chunk.metadata.items() if k.startswith("Header_")]) if getattr(chunk, 'metadata', None) else "General"
+                        
+                        chunk_meta = {
+                            "file_name": file_name,
+                            "file_format": ext.lstrip("."),
+                            "chunk_index": idx,
+                            "section_title": header_title or "General",
+                            "doc_id": doc_id_str
+                        }
+
                         await conn.execute(
                             """
-                            INSERT INTO vector_knowledge (doc_id, chunk_text, embedding)
-                            VALUES ($1, $2, $3::vector)
+                            INSERT INTO vector_knowledge (doc_id, chunk_text, metadata, embedding)
+                            VALUES ($1, $2, $3::jsonb, $4::vector)
                             """,
-                            doc_uuid, chunk.page_content, vector_str
+                            doc_uuid, chunk.page_content, json.dumps(chunk_meta), vector_str
                         )
                     
                     # 6. Update status to COMPLETE
