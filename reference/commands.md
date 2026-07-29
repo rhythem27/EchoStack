@@ -18,6 +18,16 @@ docker compose up -d
 docker compose down
 ```
 
+### Pause Services 
+```bash
+docker compose stop
+```
+
+### Resume Services
+```bash
+docker compose start
+```
+
 ### Check Container Status
 ```bash
 docker compose ps
