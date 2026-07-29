@@ -15,13 +15,15 @@ from google.genai import types
 from backend.config import settings
 from backend.db import get_db_pool
 from backend.auth import get_redis_client, current_user_id, current_user_permissions
-from backend.agent import query_user_analytics, rag_knowledge_search
+from backend.agent import query_user_analytics, rag_knowledge_search, web_search, python_code_interpreter
 
 logger = logging.getLogger("backend-websocket")
 
 # Tool priority configuration for Gemini speech responses
 TOOL_PRIORITY = {
     "rag_knowledge_search": "INTERRUPT",  # Instantly stop speaking to give RAG document answers
+    "web_search": "INTERRUPT",            # Instantly stop speaking for real-time web search results
+    "python_code_interpreter": "WHEN_IDLE",
     "query_user_analytics": "WHEN_IDLE"   # Answer analytics query once current phrase/turn completes
 }
 
@@ -115,6 +117,12 @@ async def execute_live_tool(name: str, args: dict, user_context: dict) -> str:
         elif name == "rag_knowledge_search":
             query_val = args.get("query") or args.get("search_query") or ""
             res = await rag_knowledge_search.ainvoke({"query": query_val})
+        elif name == "web_search":
+            query_val = args.get("query") or args.get("search_query") or ""
+            res = await web_search.ainvoke({"query": query_val})
+        elif name == "python_code_interpreter":
+            code_val = args.get("code") or args.get("expression") or ""
+            res = await python_code_interpreter.ainvoke({"code": code_val})
         else:
             res = f"Error: Tool '{name}' is not supported."
         
@@ -152,14 +160,14 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
     )
 
     # Initialize google-genai client
-    api_key = os.environ.get("GEMINI_API_KEY")
+    api_key = settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        logger.error("GEMINI_API_KEY environment variable is not set.")
+        logger.error("GEMINI_API_KEY environment variable is not set in settings or os.environ.")
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
         return
 
     genai_client = genai.Client(api_key=api_key)
-    live_model = os.environ.get("GEMINI_LIVE_MODEL", "gemini-2.0-flash-exp")
+    live_model = settings.GEMINI_LIVE_MODEL or os.environ.get("GEMINI_LIVE_MODEL", "gemini-2.0-flash-exp")
 
     # Define tools and voice connection configuration
     live_config = types.LiveConnectConfig(
@@ -192,6 +200,34 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                         },
                         required=["query"]
                     )
+                ),
+                types.FunctionDeclaration(
+                    name="web_search",
+                    description="Performs a real-time web search to retrieve current information, news, or factual references.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "query": types.Schema(
+                                type=types.Type.STRING, 
+                                description="The search query term or question."
+                            )
+                        },
+                        required=["query"]
+                    )
+                ),
+                types.FunctionDeclaration(
+                    name="python_code_interpreter",
+                    description="Executes Python code in a safe sandbox for mathematical calculations, data formatting, or complex formulas.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "code": types.Schema(
+                                type=types.Type.STRING, 
+                                description="The Python code string to execute."
+                            )
+                        },
+                        required=["code"]
+                    )
                 )
             ])
         ]
@@ -206,8 +242,8 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
             
             async def client_to_gemini_loop():
                 """
-                Task A: Receives base64 audio frames from client, decodes them to PCM,
-                and forwards them to the Gemini Live endpoint.
+                Task A: Receives base64 audio and video frames from client,
+                decodes them and forwards to the Gemini Live endpoint.
                 """
                 try:
                     while True:
@@ -222,6 +258,19 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                 await gemini_session.send_realtime_input(
                                     media_chunks=[types.Blob(
                                         mime_type="audio/pcm;rate=16000",
+                                        data=raw_bytes
+                                    )]
+                                )
+                        elif payload.get("type") == "video_frame":
+                            b64_data = payload.get("data")
+                            if b64_data:
+                                if "," in b64_data:
+                                    b64_data = b64_data.split(",", 1)[1]
+                                raw_bytes = base64.b64decode(b64_data)
+                                logger.info(f"Forwarding video frame ({len(raw_bytes)} bytes) to Gemini Live endpoint.")
+                                await gemini_session.send_realtime_input(
+                                    media_chunks=[types.Blob(
+                                        mime_type="image/jpeg",
                                         data=raw_bytes
                                     )]
                                 )
@@ -260,9 +309,29 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                             for call in tool_call.function_calls:
                                 logger.info(f"Intercepted function call request: {call.name} (id: {call.id})")
                                 
+                                # Notify frontend client that tool execution has started
+                                try:
+                                    await websocket.send_json({
+                                        "type": "tool_call",
+                                        "tool_name": call.name,
+                                        "args": call.args
+                                    })
+                                except Exception:
+                                    pass
+
                                 # Run tool asynchronously
                                 tool_result = await execute_live_tool(call.name, call.args, user_context)
                                 
+                                # Notify frontend client of tool execution result
+                                try:
+                                    await websocket.send_json({
+                                        "type": "tool_result",
+                                        "tool_name": call.name,
+                                        "result": tool_result
+                                    })
+                                except Exception:
+                                    pass
+
                                 # Fetch scheduling priority (INTERRUPT or WHEN_IDLE)
                                 sched_mode = TOOL_PRIORITY.get(call.name, "WHEN_IDLE")
                                 logger.info(f"Returning tool response with scheduling mode: {sched_mode}")

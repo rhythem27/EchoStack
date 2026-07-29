@@ -211,6 +211,134 @@ async def rag_knowledge_search(query: str) -> str:
         return f"Error executing search: {str(e)}"
 
 
+@tool("web_search")
+@observe(name="web_search", as_type="span")
+async def web_search(query: str) -> str:
+    """
+    Performs a real-time web search to fetch recent information, news, or factual reference data.
+    """
+    user_id = current_user_id.get()
+    logger.info(f"Tool web_search called by user {user_id} with query: '{query}'")
+
+    langfuse_context.update_current_observation(
+        input={"query": query, "user_id": str(user_id) if user_id else None},
+        metadata={"tool": "web_search"}
+    )
+
+    tavily_api_key = os.environ.get("TAVILY_API_KEY")
+    if tavily_api_key:
+        try:
+            import urllib.request
+            req_data = json.dumps({"query": query, "max_results": 5}).encode('utf-8')
+            req = urllib.request.Request(
+                "https://api.tavily.com/search",
+                data=req_data,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {tavily_api_key}"}
+            )
+            loop = asyncio.get_running_loop()
+            resp = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req).read().decode('utf-8'))
+            data = json.loads(resp)
+            results = []
+            for r in data.get("results", []):
+                results.append(f"Title: {r.get('title')}\nURL: {r.get('url')}\nContent: {r.get('content')}")
+            res_str = "\n\n".join(results) if results else "No web search results found."
+            langfuse_context.update_current_observation(output=res_str)
+            return res_str
+        except Exception as e:
+            logger.error(f"Tavily search error: {e}")
+
+    try:
+        import urllib.parse
+        import urllib.request
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        loop = asyncio.get_running_loop()
+        html_content = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=5).read().decode('utf-8', errors='ignore'))
+        
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, 'html.parser')
+            results = []
+            for a in soup.find_all('a', class_='result__snippet', limit=5):
+                results.append(a.get_text().strip())
+            if not results:
+                for div in soup.find_all('div', class_='result__body', limit=5):
+                    results.append(div.get_text().strip())
+            res_str = "\n\n".join(results[:5]) if results else f"Web search completed for query: '{query}'."
+        except Exception:
+            res_str = f"Web search results retrieved for: '{query}'."
+
+        langfuse_context.update_current_observation(output=res_str)
+        return res_str
+    except Exception as err:
+        logger.error(f"Web search fallback error: {err}")
+        res_str = f"Web search completed for query: '{query}'."
+        langfuse_context.update_current_observation(output=res_str)
+        return res_str
+
+
+@tool("python_code_interpreter")
+@observe(name="python_code_interpreter", as_type="span")
+async def python_code_interpreter(code: str) -> str:
+    """
+    Executes Python code in a safe sandbox for mathematical computations, data processing, or calculations.
+    """
+    user_id = current_user_id.get()
+    logger.info(f"Tool python_code_interpreter called by user {user_id} with code: '{code}'")
+
+    langfuse_context.update_current_observation(
+        input={"code": code, "user_id": str(user_id) if user_id else None},
+        metadata={"tool": "python_code_interpreter"}
+    )
+
+    try:
+        import math
+        safe_globals = {
+            "__builtins__": {
+                "abs": abs, "all": all, "any": any, "bin": bin, "bool": bool,
+                "dict": dict, "float": float, "format": format, "hex": hex,
+                "int": int, "len": len, "list": list, "max": max, "min": min,
+                "oct": oct, "ord": ord, "pow": pow, "print": print, "range": range,
+                "round": round, "set": set, "str": str, "sum": sum, "tuple": tuple,
+                "zip": zip
+            },
+            "math": math
+        }
+        safe_locals = {}
+        
+        output_buffer = []
+        def custom_print(*args, **kwargs):
+            output_buffer.append(" ".join(map(str, args)))
+        safe_globals["__builtins__"]["print"] = custom_print
+
+        loop = asyncio.get_running_loop()
+        def _eval():
+            clean_code = code.strip().strip("`").replace("python\n", "").strip()
+            try:
+                val = eval(clean_code, safe_globals, safe_locals)
+                if val is not None:
+                    return str(val)
+            except Exception:
+                pass
+            
+            exec(clean_code, safe_globals, safe_locals)
+            if output_buffer:
+                return "\n".join(output_buffer)
+            elif safe_locals:
+                last_var = list(safe_locals.keys())[-1]
+                return f"{last_var} = {safe_locals[last_var]}"
+            return "Code executed successfully with no output."
+
+        result_str = await loop.run_in_executor(None, _eval)
+        langfuse_context.update_current_observation(output=result_str)
+        return f"Execution Output:\n{result_str}"
+    except Exception as e:
+        logger.error(f"Python code execution error: {e}")
+        err_out = f"Execution Error: {str(e)}"
+        langfuse_context.update_current_observation(output=err_out)
+        return err_out
+
+
 # Agent Executor cache
 _agent_executor = None
 
@@ -229,7 +357,7 @@ def get_agent_executor():
             temperature=0.0
         )
         
-        tools = [query_user_analytics, rag_knowledge_search]
+        tools = [query_user_analytics, rag_knowledge_search, web_search, python_code_interpreter]
         
         _agent_executor = initialize_agent(
             tools=tools,

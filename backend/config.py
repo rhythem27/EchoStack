@@ -1,5 +1,8 @@
 import os
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 class Settings(BaseSettings):
     APP_ENV: str = "development"
@@ -14,11 +17,15 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Apache Kafka Broker configuration
-    KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
+    KAFKA_BOOTSTRAP_SERVERS: str = "127.0.0.1:9092"
     KAFKA_INGESTION_TOPIC: str = "document.ingestion.events"
 
     # Ingestion configurations
     UPLOAD_DIR: str = "/tmp/uploads"
+
+    # Gemini Live Configuration
+    GEMINI_API_KEY: str = ""
+    GEMINI_LIVE_MODEL: str = "gemini-2.0-flash-exp"
 
     model_config = SettingsConfigDict(
         env_file=".env",

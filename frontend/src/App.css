@@ -1071,3 +1071,88 @@ body {
 .btn-danger-outline:hover {
   background: rgba(239, 68, 68, 0.15);
 }
+
+/* ==============================================================================
+   Multimodal Vision & Live Tools Visualizer Styles
+   ============================================================================== */
+.video-preview-tile {
+  width: 100%;
+  max-width: 360px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border-radius: 12px;
+  background: rgba(10, 10, 15, 0.85);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  box-shadow: 0 4px 20px rgba(139, 92, 246, 0.15);
+}
+
+.video-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.video-viewport {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.video-viewport video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.tool-execution-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 20px;
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: #c084fc;
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin-top: 0.75rem;
+  animation: toolPulse 2s infinite alternate;
+}
+
+.tool-execution-badge.status-completed {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.4);
+  color: #34d399;
+}
+
+.tool-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #c084fc;
+  box-shadow: 0 0 8px #c084fc;
+}
+
+.status-completed .tool-dot {
+  background-color: #34d399;
+  box-shadow: 0 0 8px #34d399;
+}
+
+@keyframes toolPulse {
+  0% {
+    box-shadow: 0 0 5px rgba(139, 92, 246, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 15px rgba(139, 92, 246, 0.5);
+  }
+}
+
+.mt-2 { margin-top: 0.5rem; }
+.gap-2 { gap: 0.5rem; }
+.w-full { width: 100%; }
+.items-center { align-items: center; }
+

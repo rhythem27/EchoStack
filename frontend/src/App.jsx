@@ -14,7 +14,13 @@ import {
   Activity,
   CheckCircle2,
   AlertCircle,
-  ArrowRight
+  ArrowRight,
+  Camera,
+  Monitor,
+  Globe,
+  Code,
+  Cpu,
+  Sparkles
 } from 'lucide-react';
 import KnowledgeManager from './components/KnowledgeManager';
 import './App.css';
@@ -58,9 +64,59 @@ const int16BufferToBase64 = (buffer) => {
   return window.btoa(binary);
 };
 
+// Inline AudioWorklet Processor for downsampling audio to 16kHz Int16 PCM
+const WORKLET_CODE = `
+class AudioProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.targetSampleRate = 16000;
+    this.bufferSize = 480; 
+    this.buffer = new Int16Array(this.bufferSize);
+    this.bufferIndex = 0;
+    this.sourceIndex = 0;
+  }
+
+  process(inputs, outputs, parameters) {
+    const input = inputs[0];
+    if (!input || input.length === 0) return true;
+    const channelData = input[0];
+    const ratio = sampleRate / this.targetSampleRate;
+
+    for (let i = 0; i < channelData.length; i++) {
+      this.sourceIndex += 1;
+      if (this.sourceIndex >= ratio) {
+        this.sourceIndex -= ratio;
+
+        let sample = channelData[i];
+        if (sample > 1.0) sample = 1.0;
+        else if (sample < -1.0) sample = -1.0;
+
+        let intVal = Math.floor(sample * 32768);
+        if (intVal > 32767) intVal = 32767;
+        else if (intVal < -32768) intVal = -32768;
+
+        this.buffer[this.bufferIndex++] = intVal;
+
+        if (this.bufferIndex >= this.bufferSize) {
+          this.port.postMessage(this.buffer.slice(0));
+          this.bufferIndex = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+registerProcessor('audio-processor', AudioProcessor);
+`;
+
+const getWorkletBlobUrl = () => {
+  const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
+  return URL.createObjectURL(blob);
+};
+
 function App() {
   // Connection / Config States
-  const [backendUrl, setBackendUrl] = useState('http://localhost:8000');
+  const [backendUrl, setBackendUrl] = useState('http://127.0.0.1:8000');
   const [token, setToken] = useState('');
   const [permissions, setPermissions] = useState(null);
   
@@ -76,18 +132,75 @@ function App() {
   const [uploadStatus, setUploadStatus] = useState(null);
   const [isKmOpen, setIsKmOpen] = useState(false);
   
+  // Multimodal Vision & Tools State
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isScreenShareActive, setIsScreenShareActive] = useState(false);
+  const [activeTool, setActiveTool] = useState(null); // { name, label, status: 'running'|'completed' }
+
   // Metrics & Visual Logs
   const [logs, setLogs] = useState([]);
   const [latency, setLatency] = useState(0);
   const [rttStart, setRttStart] = useState(null);
   
-  // Audio & Socket References
+  // Audio, Video & Socket References
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
   const workletNodeRef = useRef(null);
   const mediaStreamRef = useRef(null);
   const scheduledSourcesRef = useRef([]);
   const nextPlaybackTimeRef = useRef(0);
+
+  // Vision Video Streaming Refs
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const videoStreamRef = useRef(null);
+  const videoIntervalRef = useRef(null);
+
+  // Tool display label lookup
+  const TOOL_LABELS = {
+    rag_knowledge_search: 'Searching Vector Knowledge...',
+    web_search: 'Searching Live Web...',
+    python_code_interpreter: 'Executing Python Sandbox...',
+    query_user_analytics: 'Fetching User Analytics...'
+  };
+
+  // Helper video frame loop
+  const startVideoFrameLoop = (stream) => {
+    if (videoIntervalRef.current) clearInterval(videoIntervalRef.current);
+
+    videoIntervalRef.current = setInterval(() => {
+      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+      if (!videoRef.current || !canvasRef.current) return;
+
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (video.videoWidth === 0 || video.videoHeight === 0) return;
+
+      canvas.width = 320;
+      canvas.height = 240;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const b64Jpeg = canvas.toDataURL('image/jpeg', 0.6);
+      wsRef.current.send(JSON.stringify({
+        type: 'video_frame',
+        data: b64Jpeg
+      }));
+    }, 1000); // Send 1 frame per second
+  };
+
+  const stopVideoStreaming = () => {
+    if (videoIntervalRef.current) {
+      clearInterval(videoIntervalRef.current);
+      videoIntervalRef.current = null;
+    }
+    if (videoStreamRef.current) {
+      videoStreamRef.current.getTracks().forEach(track => track.stop());
+      videoStreamRef.current = null;
+    }
+    setIsCameraActive(false);
+    setIsScreenShareActive(false);
+  };
 
   // Helper log generator
   const addLog = (message, type = 'info') => {
@@ -99,7 +212,18 @@ function App() {
   const fetchToken = async () => {
     try {
       addLog('Fetching authentication token from backend...', 'info');
-      const res = await fetch(`${backendUrl}/auth/token`);
+      let res;
+      try {
+        res = await fetch(`${backendUrl}/auth/token`);
+      } catch (err) {
+        const altUrl = backendUrl.includes('localhost') 
+          ? backendUrl.replace('localhost', '127.0.0.1') 
+          : 'http://localhost:8000';
+        addLog(`Primary endpoint unreachable. Trying fallback: ${altUrl}...`, 'warning');
+        res = await fetch(`${altUrl}/auth/token`);
+        setBackendUrl(altUrl);
+      }
+
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setToken(data.token);
@@ -117,7 +241,7 @@ function App() {
       });
       return data.token;
     } catch (e) {
-      addLog(`Failed to fetch debug auth token: ${e.message}`, 'error');
+      addLog(`Failed to fetch debug auth token from ${backendUrl}: ${e.message}. Ensure backend server is running.`, 'error');
       setSessionState('error');
       throw e;
     }
@@ -251,9 +375,29 @@ function App() {
 
   // 6. Connect WebSocket and start Speech Session
   const startAudioSession = async () => {
+    if (sessionState === 'connecting' || sessionState === 'connected') return;
+
     setSessionState('connecting');
     addLog('Starting speech session sequence...', 'info');
     
+    let stream = null;
+    try {
+      // 1. Request microphone access first
+      addLog('Requesting microphone access...', 'info');
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          channelCount: 1
+        }
+      });
+      mediaStreamRef.current = stream;
+    } catch (micErr) {
+      addLog(`Microphone access failed: ${micErr.message}. Please allow microphone permission in your browser address bar.`, 'error');
+      setSessionState('error');
+      return;
+    }
+
     let activeToken = token;
     try {
       if (!activeToken) {
@@ -277,20 +421,17 @@ function App() {
           // Initialize Audio Context for Audio Worklet
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
           audioContextRef.current = audioCtx;
-          
-          // Request mic stream (Task A initialization)
-          const stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              channelCount: 1
-            }
-          });
-          mediaStreamRef.current = stream;
 
           // Register and initialize the downsampler Worklet script
           addLog('Registering AudioWorklet script...', 'info');
-          await audioCtx.audioWorklet.addModule('/audio-processor.js');
+          try {
+            const workletUrl = new URL('/audio-processor.js', window.location.origin).href;
+            await audioCtx.audioWorklet.addModule(workletUrl);
+          } catch (workletErr) {
+            addLog(`AudioWorklet URL load fallback triggered: ${workletErr.message}`, 'warning');
+            const blobUrl = getWorkletBlobUrl();
+            await audioCtx.audioWorklet.addModule(blobUrl);
+          }
 
           if (audioCtx.state === 'closed') {
             addLog('AudioContext closed prior to Worklet initialization.', 'warning');
@@ -303,9 +444,6 @@ function App() {
           const source = audioCtx.createMediaStreamSource(stream);
           source.connect(workletNode);
           
-          // NOTE: Do not connect workletNode to audioCtx.destination, 
-          // as we want to transmit the microphone stream, not echo it back.
-
           // Listen to worklet output (downsampled Int16 array buffers)
           workletNode.port.onmessage = (event) => {
             if (isMuted) return;
@@ -321,7 +459,6 @@ function App() {
                 data: b64Audio
               }));
               
-              // Record timestamp for simple round-trip latency checks
               if (!rttStart) {
                 setRttStart(performance.now());
               }
@@ -330,7 +467,7 @@ function App() {
 
           addLog('Microphone streaming active (Task A started).', 'info');
         } catch (audioErr) {
-          addLog(`Audio Context/Microphone setup failed: ${audioErr.message}`, 'error');
+          addLog(`Audio Context setup failed: ${audioErr.message}`, 'error');
           stopAudioSession();
         }
       };
@@ -357,6 +494,19 @@ function App() {
           // Barge-in Interruption Signal from VAD
           flushPlaybackQueue();
         }
+        else if (msg.type === 'tool_call') {
+          const label = TOOL_LABELS[msg.tool_name] || `Executing ${msg.tool_name}...`;
+          setActiveTool({ name: msg.tool_name, label, args: msg.args, status: 'running' });
+          addLog(`Tool call initiated: [${msg.tool_name}] with args ${JSON.stringify(msg.args)}`, 'info');
+        }
+        else if (msg.type === 'tool_result') {
+          setActiveTool((prev) => prev ? { ...prev, status: 'completed' } : null);
+          const snippet = msg.result ? (typeof msg.result === 'string' ? msg.result.slice(0, 120) : JSON.stringify(msg.result).slice(0, 120)) : '';
+          addLog(`Tool [${msg.tool_name}] finished. Output snippet: ${snippet}...`, 'info');
+          setTimeout(() => {
+            setActiveTool(null);
+          }, 3500);
+        }
       };
 
       ws.onclose = () => {
@@ -375,7 +525,66 @@ function App() {
     }
   };
 
+  const toggleCamera = async () => {
+    if (isCameraActive) {
+      stopVideoStreaming();
+      addLog('Camera streaming stopped.', 'info');
+      return;
+    }
+
+    try {
+      if (isScreenShareActive) stopVideoStreaming();
+      
+      addLog('Requesting webcam access...', 'info');
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { max: 5 } }
+      });
+      videoStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setIsCameraActive(true);
+      startVideoFrameLoop(stream);
+      addLog('Camera streaming active (1 frame/sec).', 'info');
+    } catch (err) {
+      addLog(`Failed to start camera: ${err.message}`, 'error');
+    }
+  };
+
+  const toggleScreenShare = async () => {
+    if (isScreenShareActive) {
+      stopVideoStreaming();
+      addLog('Screen sharing stopped.', 'info');
+      return;
+    }
+
+    try {
+      if (isCameraActive) stopVideoStreaming();
+
+      addLog('Requesting screen capture stream...', 'info');
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { max: 5 } }
+      });
+      videoStreamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+
+      stream.getVideoTracks()[0].onended = () => {
+        stopVideoStreaming();
+        addLog('Screen share stopped by user.', 'info');
+      };
+
+      setIsScreenShareActive(true);
+      startVideoFrameLoop(stream);
+      addLog('Screen capture streaming active (1 frame/sec).', 'info');
+    } catch (err) {
+      addLog(`Failed to start screen share: ${err.message}`, 'error');
+    }
+  };
+
   const stopAudioSession = () => {
+    stopVideoStreaming();
     // Close WebSocket
     if (wsRef.current) {
       wsRef.current.close();
@@ -524,6 +733,33 @@ function App() {
             <h2>Live Speech-to-Speech</h2>
           </div>
 
+          {/* Hidden video and canvas elements for frame extraction */}
+          <video ref={videoRef} autoPlay playsInline muted style={{ display: 'none' }} />
+          <canvas ref={canvasRef} style={{ display: 'none' }} />
+
+          {/* Active Video Feed Preview Tile */}
+          {(isCameraActive || isScreenShareActive) && (
+            <div className="video-preview-tile glass-card">
+              <div className="video-preview-header">
+                <span className="badge badge-success flex items-center gap-1">
+                  <span className="ping-dot"></span>
+                  {isCameraActive ? 'Webcam Stream Active' : 'Screen Capture Active'}
+                </span>
+                <span className="text-xs font-mono text-zinc-400">1 FPS JPEG Input</span>
+              </div>
+              <div className="video-viewport">
+                <video 
+                  ref={(el) => {
+                    if (el && videoStreamRef.current) el.srcObject = videoStreamRef.current;
+                  }} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                />
+              </div>
+            </div>
+          )}
+
           <div className="visualizer-container">
             {/* Morphing glow ring base on Agent state */}
             <div className={`agent-orb state-${agentState} session-${sessionState}`}>
@@ -553,6 +789,15 @@ function App() {
                 </>
               )}
             </div>
+
+            {/* Live Tool Execution Animated Badge */}
+            {activeTool && (
+              <div className={`tool-execution-badge status-${activeTool.status}`}>
+                <Cpu size={16} className="icon-pulse text-purple-400" />
+                <span className="tool-label">{activeTool.label}</span>
+                <span className="tool-dot"></span>
+              </div>
+            )}
             
             <div className="state-descriptor">
               {sessionState === 'connected' ? (
@@ -573,7 +818,7 @@ function App() {
             </div>
           </div>
 
-          {/* User Session Controller */}
+          {/* User Session & Multimodal Vision Controllers */}
           <div className="controls-container">
             {sessionState !== 'connected' ? (
               <button 
@@ -584,17 +829,34 @@ function App() {
                 {sessionState === 'connecting' ? 'Establishing Pipeline...' : 'Start Live Session'}
               </button>
             ) : (
-              <div className="btn-group">
-                <button 
-                  onClick={toggleMute} 
-                  className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
-                >
-                  {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                  {isMuted ? 'Muted' : 'Mute'}
-                </button>
-                <button onClick={stopAudioSession} className="btn btn-danger">
-                  <Square size={18} /> Stop Session
-                </button>
+              <div className="flex flex-col gap-2 w-full items-center">
+                <div className="btn-group">
+                  <button 
+                    onClick={toggleMute} 
+                    className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
+                  >
+                    {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+                    {isMuted ? 'Muted' : 'Mute'}
+                  </button>
+                  <button onClick={stopAudioSession} className="btn btn-danger">
+                    <Square size={18} /> Stop Session
+                  </button>
+                </div>
+
+                <div className="btn-group mt-2">
+                  <button 
+                    onClick={toggleCamera} 
+                    className={`btn ${isCameraActive ? 'btn-danger' : 'btn-secondary'}`}
+                  >
+                    <Camera size={18} /> {isCameraActive ? 'Stop Camera' : 'Camera Share'}
+                  </button>
+                  <button 
+                    onClick={toggleScreenShare} 
+                    className={`btn ${isScreenShareActive ? 'btn-danger' : 'btn-secondary'}`}
+                  >
+                    <Monitor size={18} /> {isScreenShareActive ? 'Stop Screen' : 'Screen Share'}
+                  </button>
+                </div>
               </div>
             )}
           </div>
