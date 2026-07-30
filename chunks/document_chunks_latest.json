@@ -1,0 +1,25 @@
+{
+  "document_id": "2190fc1d-c835-414c-9792-81aed8f76ee4",
+  "file_name": "EchoStack_System_Architecture.pdf",
+  "total_chunks": 2,
+  "exported_at": "2026-07-30T12:19:21.391843+00:00",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "section_title": "EchoStack Architecture",
+      "metadata": {
+        "Header_1": "EchoStack Architecture"
+      },
+      "chunk_text": "EchoStack features a real-time speech-to-speech voice proxy with IBM Docling document ingestion and PostgreSQL vector search."
+    },
+    {
+      "chunk_index": 1,
+      "section_title": "RAG & Memory",
+      "metadata": {
+        "Header_1": "EchoStack Architecture",
+        "Header_2": "RAG & Memory"
+      },
+      "chunk_text": "Documents are split into markdown header chunks, embedded with BGE-small on GPU, and queried using cosine distance in PostgreSQL."
+    }
+  ]
+}

@@ -159,6 +159,13 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         metadata={"role_id": user_context["role_id"]}
     )
 
+    # Session audio & vision chunk telemetry recorder
+    session_id = str(uuid.uuid4())
+    from datetime import datetime, timezone
+    session_start_iso = datetime.now(timezone.utc).isoformat()
+    audio_telemetry_logs = []
+    chunk_counter = 0
+
     # Initialize google-genai client
     api_key = settings.GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -241,10 +248,7 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         ) as gemini_session:
             
             async def client_to_gemini_loop():
-                """
-                Task A: Receives base64 audio and video frames from client,
-                decodes them and forwards to the Gemini Live endpoint.
-                """
+                nonlocal chunk_counter
                 try:
                     while True:
                         msg_str = await websocket.receive_text()
@@ -254,8 +258,15 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                             b64_data = payload.get("data")
                             if b64_data:
                                 try:
-                                    # Decode base64 PCM back to raw bytes (16kHz PCM little-endian)
                                     raw_bytes = base64.b64decode(b64_data)
+                                    chunk_counter += 1
+                                    audio_telemetry_logs.append({
+                                        "chunk_index": chunk_counter,
+                                        "direction": "client_to_agent",
+                                        "media_type": "audio/pcm;rate=16000",
+                                        "byte_length": len(raw_bytes),
+                                        "timestamp": datetime.now(timezone.utc).isoformat()
+                                    })
                                     await gemini_session.send_realtime_input(
                                         audio=types.Blob(
                                             mime_type="audio/pcm;rate=16000",
@@ -271,6 +282,14 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                     if "," in b64_data:
                                         b64_data = b64_data.split(",", 1)[1]
                                     raw_bytes = base64.b64decode(b64_data)
+                                    chunk_counter += 1
+                                    audio_telemetry_logs.append({
+                                        "chunk_index": chunk_counter,
+                                        "direction": "client_to_agent",
+                                        "media_type": "image/jpeg",
+                                        "byte_length": len(raw_bytes),
+                                        "timestamp": datetime.now(timezone.utc).isoformat()
+                                    })
                                     logger.info(f"Forwarding video frame ({len(raw_bytes)} bytes) to Gemini Live endpoint.")
                                     await gemini_session.send_realtime_input(
                                         video=types.Blob(
@@ -284,10 +303,7 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                     logger.info(f"Client to Gemini loop exited: {e}")
 
             async def gemini_to_client_loop():
-                """
-                Task B: Receives audio turns and tool execution calls from Gemini,
-                processes/routes tools, and forwards outputs to the client continuously.
-                """
+                nonlocal chunk_counter
                 try:
                     while True:
                         async for response in gemini_session.receive():
@@ -298,7 +314,14 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                 if model_turn is not None:
                                     for part in model_turn.parts:
                                         if part.inline_data is not None:
-                                            # Base64 encode raw 24kHz PCM audio back to the client
+                                            chunk_counter += 1
+                                            audio_telemetry_logs.append({
+                                                "chunk_index": chunk_counter,
+                                                "direction": "agent_to_client",
+                                                "media_type": "audio/pcm;rate=24000",
+                                                "byte_length": len(part.inline_data.data),
+                                                "timestamp": datetime.now(timezone.utc).isoformat()
+                                            })
                                             b64_out = base64.b64encode(part.inline_data.data).decode("utf-8")
                                             await websocket.send_json({
                                                 "type": "audio_chunk",
@@ -316,7 +339,6 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                 for call in tool_call.function_calls:
                                     logger.info(f"Intercepted function call request: {call.name} (id: {call.id})")
                                     
-                                    # Notify frontend client that tool execution has started
                                     try:
                                         await websocket.send_json({
                                             "type": "tool_call",
@@ -326,10 +348,8 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                     except Exception:
                                         pass
 
-                                    # Run tool asynchronously
                                     tool_result = await execute_live_tool(call.name, call.args, user_context)
                                     
-                                    # Notify frontend client of tool execution result
                                     try:
                                         await websocket.send_json({
                                             "type": "tool_result",
@@ -339,7 +359,6 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                     except Exception:
                                         pass
 
-                                    # Fetch scheduling priority (INTERRUPT or WHEN_IDLE)
                                     sched_mode = TOOL_PRIORITY.get(call.name, "WHEN_IDLE")
                                     logger.info(f"Returning tool response with scheduling mode: {sched_mode}")
                                     
@@ -354,7 +373,6 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                 except Exception as e:
                     logger.error(f"Gemini to Client loop error: {e}", exc_info=True)
 
-            # Run loops concurrently and cancel pending loop when either loop exits
             task_a = asyncio.create_task(client_to_gemini_loop())
             task_b = asyncio.create_task(gemini_to_client_loop())
             done, pending = await asyncio.wait([task_a, task_b], return_when=asyncio.FIRST_COMPLETED)
@@ -365,6 +383,32 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         logger.error(f"Error establishing session with Gemini Live: {conn_err}")
     finally:
         logger.info("WebSocket speech proxy session closed.")
+        # Export audio stream chunks telemetry to JSON file inside 'chunks' folder
+        try:
+            export_dir = os.path.join("chunks", "audio_chunks")
+            os.makedirs(export_dir, exist_ok=True)
+            export_file = f"audio_session_{session_id}.json"
+            export_path = os.path.join(export_dir, export_file)
+            latest_path = os.path.join("chunks", "audio_chunks_latest.json")
+            
+            export_payload = {
+                "session_id": session_id,
+                "user_id": str(user_context.get("user_id")),
+                "session_started_at": session_start_iso,
+                "session_ended_at": datetime.now(timezone.utc).isoformat(),
+                "total_chunks_processed": len(audio_telemetry_logs),
+                "chunks": audio_telemetry_logs
+            }
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(export_payload, f, indent=2, ensure_ascii=False)
+            with open(latest_path, "w", encoding="utf-8") as f:
+                json.dump(export_payload, f, indent=2, ensure_ascii=False)
+
+            logger.info(f"Exported {len(audio_telemetry_logs)} audio stream chunks to JSON file: {export_path}")
+            logger.info(f"Updated latest audio chunks file: {latest_path}")
+        except Exception as export_err:
+            logger.error(f"Failed exporting audio chunk JSON: {export_err}")
+
         if websocket.client_state != status.WS_1011_INTERNAL_ERROR:
             try:
                 await websocket.close()

@@ -428,3 +428,39 @@ async def websocket_speech(websocket: WebSocket, token: Optional[str] = None):
     WebSocket endpoint for real-time speech-to-speech proxy.
     """
     await websocket_speech_proxy(websocket, token)
+
+@app.get("/chunks/list")
+def list_chunk_files():
+    """
+    Lists all document chunk JSON files and audio session chunk JSON files from 'chunks/'.
+    """
+    base_dir = "chunks"
+    doc_dir = os.path.join(base_dir, "document_chunks")
+    audio_dir = os.path.join(base_dir, "audio_chunks")
+
+    doc_files = os.listdir(doc_dir) if os.path.exists(doc_dir) else []
+    audio_files = os.listdir(audio_dir) if os.path.exists(audio_dir) else []
+
+    return {
+        "document_chunks": doc_files,
+        "audio_chunks": audio_files,
+        "latest_files": [f for f in os.listdir(base_dir) if f.endswith(".json")] if os.path.exists(base_dir) else []
+    }
+
+@app.get("/chunks/file/{category}/{filename}")
+def get_chunk_file(category: str, filename: str):
+    """
+    Retrieves the contents of a specified JSON chunk file from 'chunks/'.
+    """
+    if category in ["latest", "root"]:
+        file_path = os.path.join("chunks", filename)
+    elif category in ["document_chunks", "audio_chunks"]:
+        file_path = os.path.join("chunks", category, filename)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    with open(file_path, "r", encoding="utf-8") as f:
+        return json.load(f)

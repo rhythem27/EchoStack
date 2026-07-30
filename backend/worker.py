@@ -162,6 +162,9 @@ class IngestionWorker:
                             "doc_id": doc_id_str
                         }
 
+                        # Print chunk live in terminal console output
+                        logger.info(f"--- [INGESTING CHUNK #{idx}] ({header_title}) ---\n{chunk.page_content[:200]}...")
+
                         await conn.execute(
                             """
                             INSERT INTO vector_knowledge (doc_id, chunk_text, metadata, embedding)
@@ -176,8 +179,41 @@ class IngestionWorker:
                         doc_uuid
                     )
             
+            # 7. Export document text chunks to JSON file inside 'chunks' folder
+            export_dir = os.path.join("chunks", "document_chunks")
+            os.makedirs(export_dir, exist_ok=True)
+            export_filename = f"document_chunks_{doc_id_str}.json"
+            export_path = os.path.join(export_dir, export_filename)
+            latest_path = os.path.join("chunks", "document_chunks_latest.json")
+            
+            from datetime import datetime, timezone
+            export_data = {
+                "document_id": doc_id_str,
+                "user_id": user_id_str,
+                "file_name": file_name,
+                "total_chunks": len(chunks),
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "chunks": [
+                    {
+                        "chunk_index": idx,
+                        "section_title": " > ".join([v for k, v in chunk.metadata.items() if k.startswith("Header_")]) if getattr(chunk, 'metadata', None) else "General",
+                        "metadata": chunk.metadata if getattr(chunk, 'metadata', None) else {},
+                        "chunk_text": chunk.page_content
+                    }
+                    for idx, chunk in enumerate(chunks)
+                ]
+            }
+
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            
+            with open(latest_path, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            
+            logger.info(f"Exported {len(chunks)} text chunks to JSON file: {export_path}")
+            logger.info(f"Updated latest document chunks file: {latest_path}")
             logger.info(f"Ingestion pipeline completed successfully for document {doc_id_str}.")
-            langfuse_context.update_current_observation(output={"status": "COMPLETE", "chunks": len(chunks)})
+            langfuse_context.update_current_observation(output={"status": "COMPLETE", "chunks": len(chunks), "json_export": export_path})
 
         except Exception as e:
             logger.error(f"Ingestion processing failed for document {doc_id_str}: {e}")
