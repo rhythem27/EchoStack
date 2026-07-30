@@ -829,21 +829,9 @@ function App() {
                 {sessionState === 'connecting' ? 'Establishing Pipeline...' : 'Start Live Session'}
               </button>
             ) : (
-              <div className="flex flex-col gap-2 w-full items-center">
+              <div className="controls-stack">
+                {/* Top Row: Camera & Screen Share */}
                 <div className="btn-group">
-                  <button 
-                    onClick={toggleMute} 
-                    className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
-                  >
-                    {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
-                    {isMuted ? 'Muted' : 'Mute'}
-                  </button>
-                  <button onClick={stopAudioSession} className="btn btn-danger">
-                    <Square size={18} /> Stop Session
-                  </button>
-                </div>
-
-                <div className="btn-group mt-2">
                   <button 
                     onClick={toggleCamera} 
                     className={`btn ${isCameraActive ? 'btn-danger' : 'btn-secondary'}`}
@@ -855,6 +843,20 @@ function App() {
                     className={`btn ${isScreenShareActive ? 'btn-danger' : 'btn-secondary'}`}
                   >
                     <Monitor size={18} /> {isScreenShareActive ? 'Stop Screen' : 'Screen Share'}
+                  </button>
+                </div>
+
+                {/* Bottom Row: Mute & Call Cut (Stop Session) */}
+                <div className="btn-group">
+                  <button 
+                    onClick={toggleMute} 
+                    className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
+                  >
+                    {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
+                    {isMuted ? 'Muted' : 'Mute'}
+                  </button>
+                  <button onClick={stopAudioSession} className="btn btn-danger">
+                    <Square size={18} /> Stop Session
                   </button>
                 </div>
               </div>

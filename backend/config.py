@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     # Gemini Live Configuration
     GEMINI_API_KEY: str = ""
-    GEMINI_LIVE_MODEL: str = "gemini-2.0-flash-exp"
+    GEMINI_LIVE_MODEL: str = "gemini-3.1-flash-live-preview"
 
     model_config = SettingsConfigDict(
         env_file=".env",

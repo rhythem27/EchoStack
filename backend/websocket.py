@@ -21,10 +21,10 @@ logger = logging.getLogger("backend-websocket")
 
 # Tool priority configuration for Gemini speech responses
 TOOL_PRIORITY = {
-    "rag_knowledge_search": "INTERRUPT",  # Instantly stop speaking to give RAG document answers
-    "web_search": "INTERRUPT",            # Instantly stop speaking for real-time web search results
+    "rag_knowledge_search": "WHEN_IDLE",
+    "web_search": "WHEN_IDLE",
     "python_code_interpreter": "WHEN_IDLE",
-    "query_user_analytics": "WHEN_IDLE"   # Answer analytics query once current phrase/turn completes
+    "query_user_analytics": "WHEN_IDLE"
 }
 
 async def authenticate_websocket(token: str) -> dict:
@@ -167,7 +167,7 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         return
 
     genai_client = genai.Client(api_key=api_key)
-    live_model = settings.GEMINI_LIVE_MODEL or os.environ.get("GEMINI_LIVE_MODEL", "gemini-2.0-flash-exp")
+    live_model = settings.GEMINI_LIVE_MODEL or os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
 
     # Define tools and voice connection configuration
     live_config = types.LiveConnectConfig(
@@ -253,91 +253,97 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                         if payload.get("type") == "audio_chunk":
                             b64_data = payload.get("data")
                             if b64_data:
-                                # Decode base64 PCM back to raw bytes (16kHz PCM little-endian)
-                                raw_bytes = base64.b64decode(b64_data)
-                                await gemini_session.send_realtime_input(
-                                    media_chunks=[types.Blob(
-                                        mime_type="audio/pcm;rate=16000",
-                                        data=raw_bytes
-                                    )]
-                                )
+                                try:
+                                    # Decode base64 PCM back to raw bytes (16kHz PCM little-endian)
+                                    raw_bytes = base64.b64decode(b64_data)
+                                    await gemini_session.send_realtime_input(
+                                        audio=types.Blob(
+                                            mime_type="audio/pcm;rate=16000",
+                                            data=raw_bytes
+                                        )
+                                    )
+                                except Exception as send_err:
+                                    logger.warning(f"Failed sending audio chunk to Gemini Live: {send_err}")
                         elif payload.get("type") == "video_frame":
                             b64_data = payload.get("data")
                             if b64_data:
-                                if "," in b64_data:
-                                    b64_data = b64_data.split(",", 1)[1]
-                                raw_bytes = base64.b64decode(b64_data)
-                                logger.info(f"Forwarding video frame ({len(raw_bytes)} bytes) to Gemini Live endpoint.")
-                                await gemini_session.send_realtime_input(
-                                    media_chunks=[types.Blob(
-                                        mime_type="image/jpeg",
-                                        data=raw_bytes
-                                    )]
-                                )
+                                try:
+                                    if "," in b64_data:
+                                        b64_data = b64_data.split(",", 1)[1]
+                                    raw_bytes = base64.b64decode(b64_data)
+                                    logger.info(f"Forwarding video frame ({len(raw_bytes)} bytes) to Gemini Live endpoint.")
+                                    await gemini_session.send_realtime_input(
+                                        video=types.Blob(
+                                            mime_type="image/jpeg",
+                                            data=raw_bytes
+                                        )
+                                    )
+                                except Exception as send_err:
+                                    logger.warning(f"Failed sending video frame to Gemini Live: {send_err}")
                 except Exception as e:
                     logger.info(f"Client to Gemini loop exited: {e}")
 
             async def gemini_to_client_loop():
                 """
                 Task B: Receives audio turns and tool execution calls from Gemini,
-                processes/routes tools, and forwards outputs to the client.
+                processes/routes tools, and forwards outputs to the client continuously.
                 """
                 try:
-                    async for response in gemini_session.receive():
-                        # 1. Forward Audio Output
-                        server_content = response.server_content
-                        if server_content is not None:
-                            model_turn = server_content.model_turn
-                            if model_turn is not None:
-                                for part in model_turn.parts:
-                                    if part.inline_data is not None:
-                                        # Base64 encode raw 24kHz PCM audio back to the client
-                                        b64_out = base64.b64encode(part.inline_data.data).decode("utf-8")
+                    while True:
+                        async for response in gemini_session.receive():
+                            # 1. Forward Audio Output
+                            server_content = response.server_content
+                            if server_content is not None:
+                                model_turn = server_content.model_turn
+                                if model_turn is not None:
+                                    for part in model_turn.parts:
+                                        if part.inline_data is not None:
+                                            # Base64 encode raw 24kHz PCM audio back to the client
+                                            b64_out = base64.b64encode(part.inline_data.data).decode("utf-8")
+                                            await websocket.send_json({
+                                                "type": "audio_chunk",
+                                                "data": b64_out
+                                            })
+                                if server_content.interrupted:
+                                    logger.info("Gemini Live server content interrupted (VAD barge-in).")
+                                    await websocket.send_json({
+                                        "type": "interrupted"
+                                    })
+
+                            # 2. Intercept Tool Call requests
+                            tool_call = response.tool_call
+                            if tool_call is not None:
+                                for call in tool_call.function_calls:
+                                    logger.info(f"Intercepted function call request: {call.name} (id: {call.id})")
+                                    
+                                    # Notify frontend client that tool execution has started
+                                    try:
                                         await websocket.send_json({
-                                            "type": "audio_chunk",
-                                            "data": b64_out
+                                            "type": "tool_call",
+                                            "tool_name": call.name,
+                                            "args": call.args
                                         })
-                            if server_content.interrupted:
-                                logger.info("Gemini Live server content interrupted (VAD barge-in).")
-                                await websocket.send_json({
-                                    "type": "interrupted"
-                                })
+                                    except Exception:
+                                        pass
 
-                        # 2. Intercept Tool Call requests
-                        tool_call = response.tool_call
-                        if tool_call is not None:
-                            for call in tool_call.function_calls:
-                                logger.info(f"Intercepted function call request: {call.name} (id: {call.id})")
-                                
-                                # Notify frontend client that tool execution has started
-                                try:
-                                    await websocket.send_json({
-                                        "type": "tool_call",
-                                        "tool_name": call.name,
-                                        "args": call.args
-                                    })
-                                except Exception:
-                                    pass
+                                    # Run tool asynchronously
+                                    tool_result = await execute_live_tool(call.name, call.args, user_context)
+                                    
+                                    # Notify frontend client of tool execution result
+                                    try:
+                                        await websocket.send_json({
+                                            "type": "tool_result",
+                                            "tool_name": call.name,
+                                            "result": tool_result
+                                        })
+                                    except Exception:
+                                        pass
 
-                                # Run tool asynchronously
-                                tool_result = await execute_live_tool(call.name, call.args, user_context)
-                                
-                                # Notify frontend client of tool execution result
-                                try:
-                                    await websocket.send_json({
-                                        "type": "tool_result",
-                                        "tool_name": call.name,
-                                        "result": tool_result
-                                    })
-                                except Exception:
-                                    pass
-
-                                # Fetch scheduling priority (INTERRUPT or WHEN_IDLE)
-                                sched_mode = TOOL_PRIORITY.get(call.name, "WHEN_IDLE")
-                                logger.info(f"Returning tool response with scheduling mode: {sched_mode}")
-                                
-                                await gemini_session.send_tool_response(
-                                    types.LiveClientToolResponse(
+                                    # Fetch scheduling priority (INTERRUPT or WHEN_IDLE)
+                                    sched_mode = TOOL_PRIORITY.get(call.name, "WHEN_IDLE")
+                                    logger.info(f"Returning tool response with scheduling mode: {sched_mode}")
+                                    
+                                    await gemini_session.send_tool_response(
                                         function_responses=[types.FunctionResponse(
                                             name=call.name,
                                             response={"result": tool_result},
@@ -345,12 +351,15 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                             scheduling=sched_mode
                                         )]
                                     )
-                                )
                 except Exception as e:
-                    logger.info(f"Gemini to Client loop exited: {e}")
+                    logger.error(f"Gemini to Client loop error: {e}", exc_info=True)
 
-            # Run loops concurrently
-            await asyncio.gather(client_to_gemini_loop(), gemini_to_client_loop())
+            # Run loops concurrently and cancel pending loop when either loop exits
+            task_a = asyncio.create_task(client_to_gemini_loop())
+            task_b = asyncio.create_task(gemini_to_client_loop())
+            done, pending = await asyncio.wait([task_a, task_b], return_when=asyncio.FIRST_COMPLETED)
+            for p in pending:
+                p.cancel()
 
     except Exception as conn_err:
         logger.error(f"Error establishing session with Gemini Live: {conn_err}")
