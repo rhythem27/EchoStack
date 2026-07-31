@@ -383,31 +383,6 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
         logger.error(f"Error establishing session with Gemini Live: {conn_err}")
     finally:
         logger.info("WebSocket speech proxy session closed.")
-        # Export audio stream chunks telemetry to JSON file inside 'chunks' folder
-        try:
-            export_dir = os.path.join("chunks", "audio_chunks")
-            os.makedirs(export_dir, exist_ok=True)
-            export_file = f"audio_session_{session_id}.json"
-            export_path = os.path.join(export_dir, export_file)
-            latest_path = os.path.join("chunks", "audio_chunks_latest.json")
-            
-            export_payload = {
-                "session_id": session_id,
-                "user_id": str(user_context.get("user_id")),
-                "session_started_at": session_start_iso,
-                "session_ended_at": datetime.now(timezone.utc).isoformat(),
-                "total_chunks_processed": len(audio_telemetry_logs),
-                "chunks": audio_telemetry_logs
-            }
-            with open(export_path, "w", encoding="utf-8") as f:
-                json.dump(export_payload, f, indent=2, ensure_ascii=False)
-            with open(latest_path, "w", encoding="utf-8") as f:
-                json.dump(export_payload, f, indent=2, ensure_ascii=False)
-
-            logger.info(f"Exported {len(audio_telemetry_logs)} audio stream chunks to JSON file: {export_path}")
-            logger.info(f"Updated latest audio chunks file: {latest_path}")
-        except Exception as export_err:
-            logger.error(f"Failed exporting audio chunk JSON: {export_err}")
 
         if websocket.client_state != status.WS_1011_INTERNAL_ERROR:
             try:
