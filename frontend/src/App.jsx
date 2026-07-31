@@ -23,6 +23,7 @@ import {
   Sparkles
 } from 'lucide-react';
 import KnowledgeManager from './components/KnowledgeManager';
+import FrameDeduplicator from './utils/frameDeduplicator';
 import './App.css';
 
 // Converts Float32 audio samples back into 16-bit PCM arrays
@@ -150,11 +151,13 @@ function App() {
   const scheduledSourcesRef = useRef([]);
   const nextPlaybackTimeRef = useRef(0);
 
-  // Vision Video Streaming Refs
+  // Vision Video Streaming & Deduplication Refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const videoStreamRef = useRef(null);
   const videoIntervalRef = useRef(null);
+  const frameDeduplicatorRef = useRef(new FrameDeduplicator({ threshold: 0.15, forceKeyframeIntervalMs: 15000 }));
+  const [visionStats, setVisionStats] = useState(null);
 
   // Tool display label lookup
   const TOOL_LABELS = {
@@ -164,9 +167,11 @@ function App() {
     query_user_analytics: 'Fetching User Analytics...'
   };
 
-  // Helper video frame loop
+  // Helper video frame loop with SSIM deduplication
   const startVideoFrameLoop = (stream) => {
     if (videoIntervalRef.current) clearInterval(videoIntervalRef.current);
+    if (frameDeduplicatorRef.current) frameDeduplicatorRef.current.reset();
+    setVisionStats(null);
 
     videoIntervalRef.current = setInterval(() => {
       if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
@@ -181,12 +186,25 @@ function App() {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const b64Jpeg = canvas.toDataURL('image/jpeg', 0.6);
-      wsRef.current.send(JSON.stringify({
-        type: 'video_frame',
-        data: b64Jpeg
-      }));
-    }, 1000); // Send 1 frame per second
+      // Evaluate frame through SSIM Deduplication filter
+      const res = frameDeduplicatorRef.current.processFrame(canvas);
+      setVisionStats(res.stats);
+
+      if (res.shouldSend) {
+        const b64Jpeg = canvas.toDataURL('image/jpeg', 0.6);
+        wsRef.current.send(JSON.stringify({
+          type: 'video_frame',
+          data: b64Jpeg
+        }));
+        if (res.isKeyframe) {
+          console.log('[Vision Deduplicator] Sent KEYFRAME to Gemini Live.');
+        } else {
+          console.log(`[Vision Deduplicator] Sent motion frame (diff: ${res.diff.toFixed(3)} >= threshold ${res.stats.threshold}).`);
+        }
+      } else {
+        console.log(`[Vision Deduplicator] Skipped identical frame (diff: ${res.diff.toFixed(3)} < threshold ${res.stats.threshold}). Skip rate: ${res.stats.skipPercentage}% (${res.stats.skippedFrames}/${res.stats.totalFrames} skipped)`);
+      }
+    }, 1000); // 1 frame per second evaluation rate
   };
 
   const stopVideoStreaming = () => {
@@ -198,6 +216,14 @@ function App() {
       videoStreamRef.current.getTracks().forEach(track => track.stop());
       videoStreamRef.current = null;
     }
+    if (frameDeduplicatorRef.current) {
+      const stats = frameDeduplicatorRef.current.getStats();
+      if (stats.totalFrames > 0) {
+        addLog(`Vision stream stopped. Skipped ${stats.skipPercentage}% redundant static frames (${stats.skippedFrames}/${stats.totalFrames} skipped).`, 'info');
+      }
+      frameDeduplicatorRef.current.reset();
+    }
+    setVisionStats(null);
     setIsCameraActive(false);
     setIsScreenShareActive(false);
   };
@@ -913,8 +939,10 @@ function App() {
                   <span className="metric-value font-mono">24kHz Int16</span>
                 </div>
                 <div className="metric-box">
-                  <span className="metric-label">VAD Interrupter</span>
-                  <span className="metric-value text-pink font-semibold">Barge-in On</span>
+                  <span className="metric-label">Vision SSIM Filter</span>
+                  <span className="metric-value font-mono text-green">
+                    {visionStats ? `Skipped ${visionStats.skipPercentage}%` : 'Threshold 0.15'}
+                  </span>
                 </div>
                 <div className="metric-box">
                   <span className="metric-label">Latencies (RTT)</span>
