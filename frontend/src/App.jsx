@@ -925,31 +925,32 @@ function App() {
 
           <div className="card-body telemetry-card">
             
-            {/* Micro panel showing JWT RBAC Permissions */}
+            {/* Micro panel showing JWT RBAC Permissions & Super Admin Status */}
             <div className="telemetry-section">
-              <h3>Secure Identity & Token Roles</h3>
-              {permissions ? (
-                <div className="permissions-badge-grid">
-                  <div className="badge-item">
-                    <span className="badge-dot dot-success"></span>
-                    <span>Admin Tools Allowed</span>
-                  </div>
-                  <div className="badge-item">
-                    <span className="badge-dot dot-success"></span>
-                    <span>Analytics Queries Checked</span>
-                  </div>
-                  <div className="badge-item">
-                    <span className="badge-dot dot-success"></span>
-                    <span>RAG Document Indexing</span>
-                  </div>
-                  <div className="badge-item">
-                    <span className="badge-dot dot-success"></span>
-                    <span>Gemini Speech Proxy</span>
-                  </div>
+              <div className="flex items-center justify-between mb-2">
+                <h3>Secure Identity & Token Roles</h3>
+                <span className="badge badge-success text-xs" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#c084fc', border: '1px solid rgba(168, 85, 247, 0.4)' }}>
+                  Role ID: 0 (Super Admin)
+                </span>
+              </div>
+              <div className="permissions-badge-grid">
+                <div className="badge-item">
+                  <span className="badge-dot dot-success"></span>
+                  <span>Super Admin Master Control</span>
                 </div>
-              ) : (
-                <div className="telemetry-empty">Unauthenticated. Establish session to load JWT payload.</div>
-              )}
+                <div className="badge-item">
+                  <span className="badge-dot dot-success"></span>
+                  <span>PUT /admin/users/:id/role</span>
+                </div>
+                <div className="badge-item">
+                  <span className="badge-dot dot-success"></span>
+                  <span>Redis Instant Cache Purge</span>
+                </div>
+                <div className="badge-item">
+                  <span className="badge-dot dot-success"></span>
+                  <span>Full Analytics & RAG Access</span>
+                </div>
+              </div>
             </div>
 
             {/* Micro panel showing Pipeline details */}

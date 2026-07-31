@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    role_id INT REFERENCES roles(id) ON DELETE RESTRICT,
+    role_id INT DEFAULT 3 REFERENCES roles(id) ON DELETE RESTRICT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -80,6 +80,7 @@ USING gin (fts);
 
 -- Seed default RBAC roles
 INSERT INTO roles (id, role_name, permissions) VALUES 
+(0, 'super_admin', '{"is_super_admin": true, "can_manage_users": true, "can_access_admin_tools": true, "can_query_analytics": true, "can_write_knowledge": true, "can_chat_live": true}'),
 (1, 'admin', '{"can_access_admin_tools": true, "can_query_analytics": true, "can_write_knowledge": true, "can_chat_live": true}'),
 (2, 'premium', '{"can_access_admin_tools": false, "can_query_analytics": true, "can_write_knowledge": true, "can_chat_live": true}'),
 (3, 'standard', '{"can_access_admin_tools": false, "can_query_analytics": false, "can_write_knowledge": false, "can_chat_live": true}')

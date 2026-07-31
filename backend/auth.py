@@ -126,3 +126,20 @@ async def get_current_user_context(
         "role_id": role_id,
         "permissions": permissions
     }
+
+async def require_super_admin(
+    user_context: Dict[str, Any] = Depends(get_current_user_context)
+) -> Dict[str, Any]:
+    """
+    Security dependency that enforces Super Admin privileges (Role ID: 0 or is_super_admin: true).
+    """
+    role_id = user_context.get("role_id")
+    permissions = user_context.get("permissions") or {}
+
+    if role_id != 0 and not permissions.get("is_super_admin"):
+        logger.warning(f"Super Admin access denied for user: {user_context.get('user_id')} (role_id: {role_id})")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access forbidden: Super Admin privileges required (Role ID 0)."
+        )
+    return user_context

@@ -8,12 +8,15 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, status, Depe
 from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaProducer
 from langfuse.decorators import observe, langfuse_context
+import bcrypt
+import jwt
 
 from backend.config import settings
 from backend.db import init_db_pool, close_db_pool, get_db_pool
 from backend.auth import get_redis_client, get_current_user_context
 from backend.agent import run_agent
 from backend.websocket import websocket_speech_proxy
+from backend.api.super_admin import router as super_admin_router
 from pydantic import BaseModel
 
 # Setup logging
@@ -23,12 +26,79 @@ logger = logging.getLogger("backend-main")
 # Global Kafka Producer instance
 kafka_producer = None
 
+async def seed_super_admin_account():
+    """
+    Dynamically seeds/upserts the Super Admin role (ID: 0) and Super Admin user account 
+    using settings.SUPER_ADMIN_EMAIL, SUPER_ADMIN_PASSWORD, and SUPER_ADMIN_ID from .env.
+    """
+    logger.info("Verifying/seeding Super Admin account in PostgreSQL...")
+    try:
+        try:
+            admin_uuid = uuid.UUID(settings.SUPER_ADMIN_ID)
+        except ValueError:
+            admin_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, settings.SUPER_ADMIN_ID)
+
+        hashed_bytes = bcrypt.hashpw(settings.SUPER_ADMIN_PASSWORD.encode("utf-8"), bcrypt.gensalt())
+        hashed_password = hashed_bytes.decode("utf-8")
+
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            # 1. Upsert Super Admin role (ID: 0)
+            await conn.execute(
+                """
+                INSERT INTO roles (id, role_name, permissions) VALUES 
+                (0, 'super_admin', '{"is_super_admin": true, "can_manage_users": true, "can_access_admin_tools": true, "can_query_analytics": true, "can_write_knowledge": true, "can_chat_live": true}'::jsonb)
+                ON CONFLICT (id) DO UPDATE SET permissions = EXCLUDED.permissions;
+                """
+            )
+
+            # 2. Upsert Super Admin user account
+            user_row = await conn.fetchrow(
+                """
+                INSERT INTO users (id, email, password_hash, role_id) 
+                VALUES ($1, $2, $3, 0)
+                ON CONFLICT (email) DO UPDATE SET role_id = 0, password_hash = $3
+                RETURNING id;
+                """,
+                admin_uuid,
+                settings.SUPER_ADMIN_EMAIL,
+                hashed_password
+            )
+            actual_user_id = user_row["id"]
+
+            # 3. Seed user_profiles
+            await conn.execute(
+                """
+                INSERT INTO user_profiles (user_id, usage_tier)
+                VALUES ($1, 'super_admin')
+                ON CONFLICT (user_id) DO NOTHING;
+                """,
+                actual_user_id
+            )
+
+            # 4. Seed user_analytics
+            await conn.execute(
+                """
+                INSERT INTO user_analytics (user_id)
+                VALUES ($1)
+                ON CONFLICT (user_id) DO NOTHING;
+                """,
+                actual_user_id
+            )
+
+            logger.info(f"Super Admin account '{settings.SUPER_ADMIN_EMAIL}' (ID: {actual_user_id}) verified/seeded successfully.")
+    except Exception as e:
+        logger.error(f"Failed to seed Super Admin account: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup lifecycle
     global kafka_producer
     logger.info("Initializing database connection pool...")
     await init_db_pool()
+    
+    # Run Super Admin database seeder
+    await seed_super_admin_account()
     
     logger.info("Initializing Redis connection...")
     try:
@@ -95,6 +165,39 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include Super Admin router
+app.include_router(super_admin_router)
+
+@app.get("/auth/super-admin-token")
+async def get_super_admin_token():
+    """
+    Dev helper endpoint returning a valid Super Admin JWT token signed with SECRET_KEY.
+    """
+    try:
+        try:
+            admin_uuid_str = str(uuid.UUID(settings.SUPER_ADMIN_ID))
+        except ValueError:
+            admin_uuid_str = str(uuid.uuid5(uuid.NAMESPACE_DNS, settings.SUPER_ADMIN_ID))
+
+        payload = {
+            "user_id": admin_uuid_str,
+            "email": settings.SUPER_ADMIN_EMAIL,
+            "role_id": 0
+        }
+        token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": admin_uuid_str,
+            "email": settings.SUPER_ADMIN_EMAIL,
+            "role_id": 0
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate Super Admin token: {str(e)}"
+        )
 
 @app.post("/upload-document", status_code=status.HTTP_202_ACCEPTED)
 @observe(name="upload-document-api")

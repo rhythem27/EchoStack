@@ -4,9 +4,19 @@ This document outlines the Role-Based Access Control (RBAC) model, permissions, 
 
 ---
 
-## 1. System User Roles & Permissions
+EchoStack enforces a 4-tier Role-Based Access Control model stored in PostgreSQL and cached in Redis.
 
-EchoStack enforces a 3-tier Role-Based Access Control model stored in PostgreSQL and cached in Redis.
+### 👑 Super Admin Role (Role ID: 0)
+* **Role Name**: `super_admin`
+* **Description**: Top-tier Master System Administrator with exclusive system-wide privileges, user role management capabilities, and instant cache purge authority.
+* **Environment Credentials**: Configured securely via `.env` (`SUPER_ADMIN_EMAIL`, `SUPER_ADMIN_PASSWORD`, `SUPER_ADMIN_ID`).
+* **Permissions in English**:
+  * **User & Role Management**: Granted. Exclusive access to `GET /admin/users` and `PUT /admin/users/{user_id}/role`.
+  * **Redis Permission Cache Invalidation**: Granted. Automatically purges target user Redis permission caches (`user_permissions:<user_id>`) upon role updates.
+  * **Master Admin Tools & Analytics**: Granted. Full access to admin tools, user analytics, and knowledge indexing.
+  * **Live Agent Speech Proxy**: Granted. Full live streaming access across speech and vision proxies.
+
+---
 
 ### 🛡️ Admin Role (Role ID: 1)
 * **Role Name**: `admin`
