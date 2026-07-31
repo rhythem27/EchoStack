@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import KnowledgeManager from './components/KnowledgeManager';
 import FrameDeduplicator from './utils/frameDeduplicator';
+import VisionOverlay from './components/VisionOverlay';
 import './App.css';
 
 // Converts Float32 audio samples back into 16-bit PCM arrays
@@ -158,13 +159,31 @@ function App() {
   const videoIntervalRef = useRef(null);
   const frameDeduplicatorRef = useRef(new FrameDeduplicator({ threshold: 0.15, forceKeyframeIntervalMs: 15000 }));
   const [visionStats, setVisionStats] = useState(null);
+  const [spatialHighlights, setSpatialHighlights] = useState([]);
 
   // Tool display label lookup
   const TOOL_LABELS = {
     rag_knowledge_search: 'Searching Vector Knowledge...',
     web_search: 'Searching Live Web...',
     python_code_interpreter: 'Executing Python Sandbox...',
-    query_user_analytics: 'Fetching User Analytics...'
+    query_user_analytics: 'Fetching User Analytics...',
+    highlight_spatial_object: 'Highlighting Spatial Target...'
+  };
+
+  // Spatial Anchoring Highlight Trigger
+  const triggerSpatialHighlight = (label, box_2d) => {
+    const newHighlight = {
+      id: `${Date.now()}-${Math.random()}`,
+      label: label || 'Target Object',
+      box_2d: box_2d || [0, 0, 1000, 1000],
+      timestamp: Date.now()
+    };
+    setSpatialHighlights((prev) => [...prev, newHighlight]);
+    addLog(`Spatial Anchoring: Highlighted '${newHighlight.label}' at ${JSON.stringify(newHighlight.box_2d)}`, 'info');
+
+    setTimeout(() => {
+      setSpatialHighlights((prev) => prev.filter((h) => h.id !== newHighlight.id));
+    }, 5000);
   };
 
   // Helper video frame loop with SSIM deduplication
@@ -520,10 +539,16 @@ function App() {
           // Barge-in Interruption Signal from VAD
           flushPlaybackQueue();
         }
+        else if (msg.type === 'spatial_highlight') {
+          triggerSpatialHighlight(msg.label, msg.box_2d);
+        }
         else if (msg.type === 'tool_call') {
           const label = TOOL_LABELS[msg.tool_name] || `Executing ${msg.tool_name}...`;
           setActiveTool({ name: msg.tool_name, label, args: msg.args, status: 'running' });
           addLog(`Tool call initiated: [${msg.tool_name}] with args ${JSON.stringify(msg.args)}`, 'info');
+          if (msg.tool_name === 'highlight_spatial_object' && msg.args) {
+            triggerSpatialHighlight(msg.args.label, msg.args.box_2d);
+          }
         }
         else if (msg.type === 'tool_result') {
           setActiveTool((prev) => prev ? { ...prev, status: 'completed' } : null);
@@ -782,6 +807,7 @@ function App() {
                   playsInline 
                   muted 
                 />
+                <VisionOverlay highlights={spatialHighlights} />
               </div>
             </div>
           )}

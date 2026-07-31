@@ -24,7 +24,8 @@ TOOL_PRIORITY = {
     "rag_knowledge_search": "WHEN_IDLE",
     "web_search": "WHEN_IDLE",
     "python_code_interpreter": "WHEN_IDLE",
-    "query_user_analytics": "WHEN_IDLE"
+    "query_user_analytics": "WHEN_IDLE",
+    "highlight_spatial_object": "WHEN_IDLE"
 }
 
 async def authenticate_websocket(token: str) -> dict:
@@ -123,6 +124,10 @@ async def execute_live_tool(name: str, args: dict, user_context: dict) -> str:
         elif name == "python_code_interpreter":
             code_val = args.get("code") or args.get("expression") or ""
             res = await python_code_interpreter.ainvoke({"code": code_val})
+        elif name == "highlight_spatial_object":
+            label_val = args.get("label", "Target Object")
+            box_val = args.get("box_2d", [0, 0, 1000, 1000])
+            res = f"Spatial bounding box overlay for '{label_val}' rendered at normalized coordinates {box_val}."
         else:
             res = f"Error: Tool '{name}' is not supported."
         
@@ -235,6 +240,25 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                         },
                         required=["code"]
                     )
+                ),
+                types.FunctionDeclaration(
+                    name="highlight_spatial_object",
+                    description="Draws a real-time spatial bounding box overlay on the user's video feed when identifying, locating, or pointing out specific objects, text, UI elements, or components in the active camera view.",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "label": types.Schema(
+                                type=types.Type.STRING,
+                                description="Short descriptive label for the target visual element or object."
+                            ),
+                            "box_2d": types.Schema(
+                                type=types.Type.ARRAY,
+                                items=types.Schema(type=types.Type.INTEGER),
+                                description="Normalized bounding box coordinates [ymin, xmin, ymax, xmax] scaled from 0 to 1000."
+                            )
+                        },
+                        required=["label", "box_2d"]
+                    )
                 )
             ])
         ]
@@ -345,6 +369,12 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                             "tool_name": call.name,
                                             "args": call.args
                                         })
+                                        if call.name == "highlight_spatial_object":
+                                            await websocket.send_json({
+                                                "type": "spatial_highlight",
+                                                "label": call.args.get("label", "Target Object"),
+                                                "box_2d": call.args.get("box_2d", [0, 0, 1000, 1000])
+                                            })
                                     except Exception:
                                         pass
 
