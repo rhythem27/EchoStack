@@ -20,11 +20,17 @@ import {
   Globe,
   Code,
   Cpu,
-  Sparkles
+  Sparkles,
+  Copy,
+  Trash2,
+  LogIn,
+  LogOut,
+  User
 } from 'lucide-react';
 import KnowledgeManager from './components/KnowledgeManager';
 import FrameDeduplicator from './utils/frameDeduplicator';
 import VisionOverlay from './components/VisionOverlay';
+import AuthModal from './components/AuthModal';
 import './App.css';
 
 // Converts Float32 audio samples back into 16-bit PCM arrays
@@ -138,6 +144,44 @@ function App() {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isScreenShareActive, setIsScreenShareActive] = useState(false);
   const [activeTool, setActiveTool] = useState(null); // { name, label, status: 'running'|'completed' }
+
+  // Authentication & User Portal State
+  const [authUser, setAuthUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('echostack_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [authToken, setAuthToken] = useState(() => localStorage.getItem('echostack_token') || '');
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+
+  // Live Speech Transcripts State
+  const [transcripts, setTranscripts] = useState([
+    { id: '1', sender: 'ai', text: 'Hello! I am EchoStack AI Assistant. Connect speech or ask me anything.', time: 'System' }
+  ]);
+  const [copySuccess, setCopySuccess] = useState(false);
+
+  const handleLogout = () => {
+    localStorage.removeItem('echostack_token');
+    localStorage.removeItem('echostack_user');
+    setAuthUser(null);
+    setAuthToken('');
+    addLog('Logged out of EchoStack session.', 'info');
+  };
+
+  const copyTranscriptText = () => {
+    if (transcripts.length === 0) return;
+    const fullText = transcripts.map(t => `[${t.sender.toUpperCase()}] ${t.text}`).join('\n');
+    navigator.clipboard.writeText(fullText);
+    setCopySuccess(true);
+    setTimeout(() => setCopySuccess(false), 2000);
+  };
+
+  const clearTranscripts = () => {
+    setTranscripts([]);
+  };
 
   // Metrics & Visual Logs
   const [logs, setLogs] = useState([]);
@@ -253,10 +297,10 @@ function App() {
     setLogs((prev) => [{ time, message, type }, ...prev].slice(0, 100));
   };
 
-  // 1. Fetch JWT token & verify permissions
+  // 1. Fetch default fallback JWT token (00000000-0000-0000-0000-000000000000)
   const fetchToken = async () => {
     try {
-      addLog('Fetching authentication token from backend...', 'info');
+      addLog('Fetching default system fallback token (00000000-0000-0000-0000-000000000000)...', 'info');
       let res;
       try {
         res = await fetch(`${backendUrl}/auth/token`);
@@ -271,12 +315,12 @@ function App() {
 
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setToken(data.token);
+      setAuthToken(data.token);
       
       // Decode JWT payload locally to extract roles/permissions
       const payloadBase64 = data.token.split('.')[1];
       const payloadDecoded = JSON.parse(window.atob(payloadBase64));
-      addLog(`Authenticated successfully. User UUID: ${payloadDecoded.user_id}`, 'info');
+      addLog(`Default fallback token loaded. User UUID: ${payloadDecoded.user_id}`, 'info');
 
       setPermissions({
         can_access_admin_tools: true,
@@ -286,7 +330,7 @@ function App() {
       });
       return data.token;
     } catch (e) {
-      addLog(`Failed to fetch debug auth token from ${backendUrl}: ${e.message}. Ensure backend server is running.`, 'error');
+      addLog(`Failed to fetch default auth token from ${backendUrl}: ${e.message}. Ensure backend server is running.`, 'error');
       setSessionState('error');
       throw e;
     }
@@ -338,7 +382,7 @@ function App() {
 
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('user_id', '00000000-0000-0000-0000-000000000000'); // Seed admin user
+    formData.append('user_id', authUser?.id || '00000000-0000-0000-0000-000000000000');
 
     try {
       const res = await fetch(`${backendUrl}/upload-document`, {
@@ -443,10 +487,19 @@ function App() {
       return;
     }
 
-    let activeToken = token;
+    let activeToken = authToken;
     try {
       if (!activeToken) {
+        addLog('No account logged in. Using default fallback system token (00000000-0000-0000-0000-000000000000)...', 'info');
         activeToken = await fetchToken();
+      } else {
+        try {
+          const payloadBase64 = activeToken.split('.')[1];
+          const payloadDecoded = JSON.parse(window.atob(payloadBase64));
+          addLog(`Authenticated with logged-in account (@${authUser?.username || 'user'}). User UUID: ${payloadDecoded.user_id}`, 'info');
+        } catch (err) {
+          addLog('Authenticated with active user session token.', 'info');
+        }
       }
       
       // Establish WebSocket
@@ -683,20 +736,56 @@ function App() {
           </div>
           <h1>EchoStack <span className="gradient-text font-light">Live Portal</span></h1>
         </div>
-        <div className="connection-status">
-          {sessionState === 'connected' && (
-            <span className="badge badge-success">
-              <span className="ping-dot"></span> Secure Speech Active
-            </span>
-          )}
-          {sessionState === 'connecting' && (
-            <span className="badge badge-warning">Connecting...</span>
-          )}
-          {sessionState === 'disconnected' && (
-            <span className="badge badge-idle">Ready</span>
-          )}
-          {sessionState === 'error' && (
-            <span className="badge badge-error">Connection Error</span>
+
+        <div className="flex items-center gap-3">
+          <div className="connection-status">
+            {sessionState === 'connected' && (
+              <span className="badge badge-success">
+                <span className="ping-dot"></span> Secure Speech Active
+              </span>
+            )}
+            {sessionState === 'connecting' && (
+              <span className="badge badge-warning">Connecting...</span>
+            )}
+            {sessionState === 'disconnected' && (
+              <span className="badge badge-idle">Ready</span>
+            )}
+            {sessionState === 'error' && (
+              <span className="badge badge-error">Connection Error</span>
+            )}
+          </div>
+
+          {/* Authentication & User Badge */}
+          {authUser ? (
+            <div className="user-identity-badge">
+              <div className="user-avatar-circle">
+                {(authUser.full_name || authUser.username || 'U')[0].toUpperCase()}
+              </div>
+              <div className="user-identity-info">
+                <span className="user-identity-name">{authUser.full_name || authUser.username}</span>
+                <span className="user-identity-username">@{authUser.username}</span>
+              </div>
+              <span className={`user-role-pill user-role-${authUser.role_name}`}>
+                {authUser.role_name}
+              </span>
+              <button 
+                onClick={handleLogout} 
+                className="header-logout-btn flex items-center gap-1"
+                title="Sign Out"
+              >
+                <LogOut size={14} />
+                <span>Logout</span>
+              </button>
+            </div>
+          ) : (
+            <button 
+              onClick={() => setIsAuthOpen(true)} 
+              className="btn btn-primary text-xs py-half px-3 flex items-center gap-1"
+              style={{ fontSize: '0.82rem', padding: '0.4rem 0.85rem' }}
+            >
+              <LogIn size={15} />
+              <span>Sign In / Register</span>
+            </button>
           )}
         </div>
       </header>
@@ -914,6 +1003,51 @@ function App() {
               </div>
             )}
           </div>
+
+          {/* Live Speech Transcript UI Panel */}
+          <div className="speech-transcript-panel glass-card">
+            <div className="speech-transcript-header">
+              <div className="speech-transcript-title">
+                <FileText size={16} className="text-purple-400" />
+                <span>Live Audio Transcript</span>
+              </div>
+              <div className="speech-transcript-actions">
+                <button 
+                  onClick={copyTranscriptText} 
+                  className="transcript-btn"
+                  title="Copy transcript to clipboard"
+                >
+                  <Copy size={13} />
+                  <span>{copySuccess ? 'Copied!' : 'Copy'}</span>
+                </button>
+                <button 
+                  onClick={clearTranscripts} 
+                  className="transcript-btn"
+                  title="Clear transcript history"
+                >
+                  <Trash2 size={13} />
+                  <span>Clear</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="speech-transcript-list">
+              {transcripts.length === 0 ? (
+                <div className="transcript-empty">
+                  No transcripts recorded yet. Start live speech session to stream audio conversation.
+                </div>
+              ) : (
+                transcripts.map((t) => (
+                  <div 
+                    key={t.id} 
+                    className={`transcript-bubble transcript-bubble-${t.sender === 'user' ? 'user' : 'ai'}`}
+                  >
+                    {t.text}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </section>
 
         {/* Right column: Observability Logs & System Telemetry */}
@@ -1021,6 +1155,17 @@ function App() {
         isOpen={isKmOpen} 
         onClose={() => setIsKmOpen(false)} 
         onRefresh={fetchDocuments}
+      />
+
+      {/* Auth & Identity Modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        onAuthSuccess={(user, token) => {
+          setAuthUser(user);
+          setAuthToken(token);
+          addLog(`Authenticated as ${user.full_name || user.username} (@${user.username}).`, 'info');
+        }}
       />
     </div>
   );

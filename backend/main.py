@@ -17,6 +17,7 @@ from backend.auth import get_redis_client, get_current_user_context
 from backend.agent import run_agent
 from backend.websocket import websocket_speech_proxy
 from backend.api.super_admin import router as super_admin_router
+from backend.api.users import router as users_router
 from pydantic import BaseModel
 
 # Setup logging
@@ -55,9 +56,13 @@ async def seed_super_admin_account():
             # 2. Upsert Super Admin user account
             user_row = await conn.fetchrow(
                 """
-                INSERT INTO users (id, email, password_hash, role_id) 
-                VALUES ($1, $2, $3, 0)
-                ON CONFLICT (email) DO UPDATE SET role_id = 0, password_hash = $3
+                INSERT INTO users (id, email, password_hash, role_id, full_name, username) 
+                VALUES ($1, $2, $3, 0, 'Rhythem Sharma', 'echo_admin')
+                ON CONFLICT (email) DO UPDATE SET 
+                    role_id = 0, 
+                    password_hash = $3,
+                    full_name = COALESCE(users.full_name, 'Rhythem Sharma'),
+                    username = COALESCE(users.username, 'echo_admin')
                 RETURNING id;
                 """,
                 admin_uuid,
@@ -166,8 +171,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Super Admin router
+# Include Super Admin router & Users API router
 app.include_router(super_admin_router)
+app.include_router(users_router)
 
 @app.get("/auth/super-admin-token")
 async def get_super_admin_token():

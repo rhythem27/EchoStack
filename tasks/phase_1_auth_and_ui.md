@@ -5,45 +5,52 @@ This task document details the specifications, backend endpoints, and frontend c
 ---
 
 ## 1. Objectives
-- Implement complete user registration and login endpoints with password hashing.
-- Build a frontend Login & Registration modal/page with role selection.
+- Implement user registration and login endpoints supporting Full Name, Username, Email, and Password hashing.
+- Support login via either Username or Email.
+- Build a frontend Login & Registration modal/page.
 - Implement live audio text transcript logging in the React UI.
-- Add dynamic Gemini voice selection (Puck, Charon, Aoede, Fenrir, Kore).
 
 ---
 
 ## 2. Technical Tasks
 
-### 2.1 Backend Authentication Service ([backend/auth.py](file:///c:/git-hub/EchoStack/backend/auth.py))
-- [ ] Add password hashing and verification using `passlib[bcrypt]`.
-- [ ] Create `POST /auth/register` endpoint:
-  - Input: `email`, `password`, `role_id`.
-  - Validate email uniqueness, hash password, create user in `users` table.
+### 2.1 Backend User & Authentication API ([backend/api/users.py](file:///c:/git-hub/EchoStack/backend/api/users.py))
+- [x] Support `full_name` and `username` schema attributes in the database.
+- [x] Implement `POST /api/users/register`:
+  - **Inputs:** `full_name`, `username`, `email`, `password`.
+  - **Username Rules:** All lowercase, no spaces allowed.
+  - **Full Name Rules:** Only letters (and spaces) allowed; no symbols or special characters.
+  - **Uniqueness Check:** If either `email` or `username` already exists in the DB, return error `"user already exists"`.
+  - **Default Role:** New users created are assigned the `standard` role by default (Superadmin can upgrade users to upper roles).
+  - Password hashed using `bcrypt`/`passlib`.
   - Return JWT access token and user profile details.
-- [ ] Create `POST /auth/login` endpoint:
-  - Input: `email`, `password`.
-  - Verify password hash, generate JWT access token with user claims.
+- [x] Implement `POST /api/users/login`:
+  - **Inputs:** Identifier (`username` OR `email`) and `password`.
+  - Allow login with either `username` or `email`.
+  - Verify password hash and generate JWT access token with user claims.
   - Cache permissions in Redis (`user_permissions:{user_id}`).
 
 ### 2.2 Frontend Authentication Portal ([frontend/src/components/AuthModal.jsx](file:///c:/git-hub/EchoStack/frontend/src/components/AuthModal.jsx))
-- [ ] Build a sleek glassmorphic Auth Modal:
+- [x] Build a sleek glassmorphic Auth Modal:
   - Tab toggle between **Login** and **Register**.
-  - Form fields: Email, Password, Role Selector (`Standard`, `Premium`, `Admin`).
+  - **Register Form:** Full Name, Username, Email, Password.
+  - **Login Form:** Username or Email, Password.
+  - Form validation matching backend rules (lowercase & no spaces for username, letters only for full name).
   - Persist JWT token in `localStorage`.
-  - User avatar and logout button in the top navigation bar.
+  - Display user avatar, full name/username, and logout button in the top navigation bar.
 
 ### 2.3 Live Speech Transcript UI Panel ([frontend/src/App.jsx](file:///c:/git-hub/EchoStack/frontend/src/App.jsx))
-- [ ] Render live transcript bubbles beneath the Speech Control Orb.
-- [ ] Display real-time user speech input and AI text output as audio streams.
-- [ ] Add copy transcript and clear transcript buttons.
-
-### 2.4 Voice & Modality Selector
-- [ ] Add backend endpoint / query param for selecting Gemini Live voice.
-- [ ] Add voice selection dropdown in UI (*Puck*, *Charon*, *Aoede*, *Fenrir*, *Kore*).
+- [x] Render live transcript bubbles beneath the Speech Control Orb.
+- [x] Display real-time user speech input and AI text output as audio streams.
+- [x] Add copy transcript and clear transcript buttons.
 
 ---
 
 ## 3. Verification Criteria
-- [ ] User can register a new account, log in, and receive a valid JWT token.
-- [ ] Frontend displays user identity and role badges dynamically based on logged-in user.
-- [ ] Live Speech-to-Speech session displays text transcript bubbles during voice interaction.
+- [x] User can register a new account with Full Name, Username, Email, and Password.
+- [x] Username enforces lowercase and no spaces; Full Name permits only letters.
+- [x] Duplicate email or username returns `"user already exists"` error.
+- [x] User can log in using either Username or Email with their password.
+- [x] New users receive the `standard` role by default; Superadmin can upgrade user roles.
+- [x] Frontend displays user identity dynamically based on logged-in user.
+- [x] Live Speech-to-Speech session displays text transcript bubbles during voice interaction.
