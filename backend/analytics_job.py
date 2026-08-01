@@ -1,20 +1,24 @@
 import os
 import logging
+from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, current_timestamp
+
+# Load environment variables directly from .env file
+load_dotenv()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("backend-analytics-job")
 
 def run_analytics_etl():
-    # Retrieve configurations from environment
-    db_host = os.getenv("POSTGRES_HOST", "postgres")
-    db_port = os.getenv("POSTGRES_PORT", "5432")
-    db_name = os.getenv("POSTGRES_DB", "echostack_db")
-    db_user = os.getenv("POSTGRES_USER", "postgres_user")
-    db_pass = os.getenv("POSTGRES_PASSWORD", "postgres_secure_password")
-    spark_master = os.getenv("SPARK_MASTER_URL", "local[*]")
+    # Retrieve configurations directly from .env
+    db_host = os.getenv("POSTGRES_HOST")
+    db_port = os.getenv("POSTGRES_PORT")
+    db_name = os.getenv("POSTGRES_DB")
+    db_user = os.getenv("POSTGRES_USER")
+    db_pass = os.getenv("POSTGRES_PASSWORD")
+    spark_master = os.getenv("SPARK_MASTER_URL")
 
     # PostgreSQL JDBC Connection String
     # Critically append ?stringtype=unspecified to allow Postgres to automatically cast strings into UUID / JSONB types
