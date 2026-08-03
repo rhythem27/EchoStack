@@ -5,8 +5,11 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18.0-61DAFB.svg?logo=react&logoColor=white)](https://reactjs.org)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%2B_pgvector-4169E1.svg?logo=postgresql&logoColor=white)](https://postgresql.org)
+[![Redis](https://img.shields.io/badge/Redis-7.0%2B_Session_Cache-DC382D.svg?logo=redis&logoColor=white)](https://redis.io)
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-Event_Ingestion-231F20.svg?logo=apachekafka&logoColor=white)](https://kafka.apache.org)
 [![Apache Spark](https://img.shields.io/badge/Apache_Spark-3.5_ETL-E25A1C.svg?logo=apachespark&logoColor=white)](https://spark.apache.org)
+[![Docker](https://img.shields.io/badge/Docker-Containerized_Compose-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com)
+[![WebSockets](https://img.shields.io/badge/WebSockets-Realtime_Stream-010101.svg?logo=socketdotio&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API)
 [![Langfuse](https://img.shields.io/badge/Langfuse-Telemetry_%26_Tracing-FF4500.svg)](https://langfuse.com)
 [![Gemini Live API](https://img.shields.io/badge/Gemini_Live-Multimodal_Stream-8E75B2.svg?logo=google&logoColor=white)](https://ai.google.dev)
 
@@ -87,29 +90,36 @@ graph TD
 
 ---
 
-## ⚡ Cost & Latency Optimization Showcase
+## 💡 Interactive Prompts & Feature Showcase
 
-EchoStack is engineered from the ground up for high throughput, minimal API token burn, and sub-second voice latency:
+You can interact with **EchoStack** via speech (voice), text, or live camera feed. Below are example prompts showcasing the platform's capabilities:
 
-### 1. Structural Similarity (SSIM) Frame Deduplication
-- **Problem**: Continuous 30 FPS video streaming burns millions of vision API tokens per minute, sending redundant identical frames.
-- **Solution**: EchoStack evaluates consecutive frames using Structural Similarity (SSIM) pixel differences on the client side before transmission.
-- **Result**: **Reduces vision token costs by up to 80%** while preserving frame-by-frame visual accuracy for moving objects and UI changes.
+### 🎙️ 1. Real-Time Speech & User Analytics
+- **"Hey Echo, show me a summary of my account analytics and total interaction history for this week."**
+  - *Behind the scenes*: Triggers `query_user_analytics` to query PostgreSQL DB and speak back an executive summary.
+- **"What are my current account permissions and assigned security roles?"**
+  - *Behind the scenes*: Checks RBAC permissions cached in Redis for fast validation.
 
-### 2. Sub-10ms HNSW Cosine Vector Retrieval
-- **Problem**: Flat vector searches degrade exponentially as document chunk datasets grow.
-- **Solution**: Vector embeddings (`BAAI/bge-small-en-v1.5`) are indexed in PostgreSQL using Hierarchical Navigable Small World (**HNSW**) graphs (`m=16, ef_construction=64`).
-- **Result**: Sub-10ms cosine similarity lookups combined with Reciprocal Rank Fusion (**RRF**) keyword search.
+### 👁️ 2. Multimodal Camera & Spatial Object Detection
+- **"Look at what I am holding in front of the camera — identify the object and draw a bounding box around it."**
+  - *Behind the scenes*: Processes 1 FPS JPEG video frames and returns `highlight_spatial_object` coordinates (`[ymin, xmin, ymax, xmax]`) to render real-time bounding box overlays on screen.
+- **"Inspect the text on my screen and explain what this architecture diagram represents."**
+  - *Behind the scenes*: Analyzes live screen-share frames and provides step-by-step visual explanations.
 
-### 3. Asynchronous Kafka Queue Isolation
-- **Problem**: Parsing complex PDFs or PPTX files and generating embeddings causes HTTP timeouts if executed synchronously in API request handlers.
-- **Solution**: Ingestion requests immediately return an `ingestion_job_id` and push document events to Apache Kafka (`document.ingestion.events`). Decoupled worker processes consume events, extract text, compute embeddings, and update document status asynchronously.
-- **Result**: Guaranteed sub-50ms REST API response times for document uploads regardless of file size.
+### 📚 3. Hybrid RAG Document Knowledge Search
+- **"Search the knowledge base for our PostgreSQL vector indexing and deployment setup."**
+  - *Behind the scenes*: Runs hybrid vector search (BAAI/bge-small-en-v1.5) + keyword search using Reciprocal Rank Fusion (**RRF**) against ingested `.pdf`, `.docx`, `.md`, or `.csv` files.
+- **"What does section 2 of our architecture manual say about Kafka event ingestion topics?"**
+  - *Behind the scenes*: Retrieves relevant document chunks and synthesizes exact section references.
 
-### 4. VAD Barge-In & Queue Cancellation
-- **Problem**: User voice interruptions cause overlapping audio output and model state desynchronization.
-- **Solution**: The backend listens for server-side Voice Activity Detection (VAD) interruption signals from the Gemini Live stream. Upon detection, an `interrupted` frame is broadcast to the React frontend, instantly flushing Web Audio API playback buffers.
-- **Result**: Zero audio overlap and seamless real-time conversation flow.
+### 🧮 4. Sandboxed Python Code Interpretation & Math
+- **"Run a Python script to compute the 30-day compound growth rate on a $10,000 investment at 8.5% annual return."**
+  - *Behind the scenes*: Executes code safely inside `python_code_interpreter` sandbox and returns exact math calculations.
+- **"Calculate the mean and standard deviation for this dataset `[12, 45, 67, 89, 23, 56, 78]` using Python."**
+
+### 🌐 5. Live Web Search & Fact Retrieval
+- **"Search the web for the latest updates on Gemini Live API features and release notes."**
+  - *Behind the scenes*: Invokes `web_search` tool (via Tavily / DuckDuckGo API) to fetch real-time facts and citations.
 
 ---
 
