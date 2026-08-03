@@ -27,25 +27,33 @@ HEADERS_TO_SPLIT = [
 
 class IngestionWorker:
     def __init__(self):
+        import torch
         self.loop = asyncio.get_running_loop()
         self.executor = ThreadPoolExecutor(max_workers=3)
         
-        logger.info("Initializing SentenceTransformer BAAI/bge-small-en-v1.5 on GPU (cuda)...")
-        # Explicitly configure device='cuda' to force RTX GPU usage
-        self.embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cuda")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Initializing SentenceTransformer BAAI/bge-small-en-v1.5 on device: {device}...")
+        self.embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5", device=device)
         
         logger.info("Initializing IBM Docling Document Converter...")
         self.doc_converter = DocumentConverter()
         
-        logger.info("Initializing Kafka Consumer...")
-        self.consumer = KafkaConsumer(
-            settings.KAFKA_INGESTION_TOPIC,
-            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
-            group_id="document_processors",
-            value_deserializer=lambda m: json.loads(m.decode("utf-8")),
-            auto_offset_reset="earliest",
-            enable_auto_commit=True
-        )
+        self.consumer = None
+        if getattr(settings, 'ENABLE_KAFKA', False):
+            try:
+                logger.info("Initializing Kafka Consumer...")
+                self.consumer = KafkaConsumer(
+                    settings.KAFKA_INGESTION_TOPIC,
+                    bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
+                    group_id="document_processors",
+                    value_deserializer=lambda m: json.loads(m.decode("utf-8")),
+                    auto_offset_reset="earliest",
+                    enable_auto_commit=True
+                )
+            except Exception as e:
+                logger.warning(f"Kafka Consumer initialization skipped: {e}. Polling database mode active.")
+        else:
+            logger.info("Kafka Consumer disabled. Database polling mode active.")
         
         self.markdown_splitter = MarkdownHeaderTextSplitter(
             headers_to_split_on=HEADERS_TO_SPLIT,
@@ -56,19 +64,64 @@ class IngestionWorker:
         logger.info("Worker started successfully and listening for ingestion events...")
         try:
             while True:
-                # Use non-blocking poll to yield control back to event loop
-                msg_pack = self.consumer.poll(timeout_ms=200)
-                for tp, messages in msg_pack.items():
-                    for message in messages:
-                        payload = message.value
-                        logger.info(f"Received ingestion event: {payload}")
-                        await self.process_event(payload)
+                # 1. Poll Kafka if active
+                if self.consumer is not None:
+                    try:
+                        msg_pack = self.consumer.poll(timeout_ms=200)
+                        for tp, messages in msg_pack.items():
+                            for message in messages:
+                                payload = message.value
+                                logger.info(f"Received Kafka ingestion event: {payload}")
+                                await self.process_event(payload)
+                    except Exception as kafka_poll_err:
+                        logger.warning(f"Kafka poll error: {kafka_poll_err}")
+
+                # 2. Database polling fallback for PENDING documents
+                try:
+                    pool = await get_db_pool()
+                    async with pool.acquire() as conn:
+                        rows = await conn.fetch(
+                            "SELECT id, user_id, file_name FROM documents WHERE status = 'PENDING' LIMIT 5"
+                        )
+                        for row in rows:
+                            doc_id_str = str(row['id'])
+                            user_id_str = str(row['user_id'])
+                            file_name = row['file_name']
+
+                            # Find file path in uploads directory
+                            upload_dir = settings.UPLOAD_DIR
+                            matched_file = None
+                            if os.path.exists(upload_dir):
+                                for f in os.listdir(upload_dir):
+                                    if f.startswith(doc_id_str):
+                                        matched_file = os.path.join(upload_dir, f)
+                                        break
+
+                            if matched_file and os.path.exists(matched_file):
+                                logger.info(f"Picked up PENDING document from PostgreSQL: {file_name} ({doc_id_str})")
+                                payload = {
+                                    "doc_id": doc_id_str,
+                                    "user_id": user_id_str,
+                                    "file_path": matched_file,
+                                    "file_name": file_name
+                                }
+                                await self.process_event(payload)
+                            else:
+                                logger.warning(f"File for pending document {doc_id_str} not found in {upload_dir}. Marking FAILED.")
+                                await conn.execute("UPDATE documents SET status = 'FAILED' WHERE id = $1", row['id'])
+                except Exception as db_poll_err:
+                    logger.error(f"Database polling error in worker: {db_poll_err}")
+
                 # Yield execution thread briefly
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.5)
         except asyncio.CancelledError:
             logger.info("Worker cancelled, exiting loop...")
         finally:
-            self.consumer.close()
+            if self.consumer:
+                try:
+                    self.consumer.close()
+                except Exception:
+                    pass
 
     @observe(name="document-ingestion-worker", as_type="span")
     async def process_event(self, payload: dict):
@@ -107,18 +160,11 @@ class IngestionWorker:
             ext = os.path.splitext(file_name)[1].lower()
 
             if ext in [".txt", ".csv", ".md"]:
-                try:
-                    conversion_result = await self.loop.run_in_executor(
-                        self.executor,
-                        self.doc_converter.convert,
-                        file_path
-                    )
-                    markdown_text = conversion_result.document.export_to_markdown()
-                except Exception as docling_err:
-                    logger.warning(f"Docling conversion fallback for {ext} file: {docling_err}")
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        markdown_text = f.read()
+                logger.info(f"Fast-path reading plain text document ({ext})...")
+                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    markdown_text = f.read()
             else:
+                logger.info(f"Running IBM Docling layout analysis for rich document ({ext})...")
                 conversion_result = await self.loop.run_in_executor(
                     self.executor,
                     self.doc_converter.convert,

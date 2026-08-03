@@ -17,11 +17,12 @@ class Settings(BaseSettings):
     REDIS_URL: str = os.getenv("REDIS_URL", "")
 
     # Apache Kafka Broker configuration
+    ENABLE_KAFKA: bool = os.getenv("ENABLE_KAFKA", "false").lower() in ("true", "1")
     KAFKA_BOOTSTRAP_SERVERS: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
     KAFKA_INGESTION_TOPIC: str = os.getenv("KAFKA_INGESTION_TOPIC", "document.ingestion.events")
 
     # Ingestion configurations
-    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "/tmp/uploads")
+    UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads"))
 
     # Gemini Live Configuration
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")

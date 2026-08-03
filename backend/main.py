@@ -18,6 +18,7 @@ from backend.agent import run_agent
 from backend.websocket import websocket_speech_proxy
 from backend.api.super_admin import router as super_admin_router
 from backend.api.users import router as users_router
+from backend.api.cards import router as cards_router
 from pydantic import BaseModel
 
 # Setup logging
@@ -91,7 +92,26 @@ async def seed_super_admin_account():
                 actual_user_id
             )
 
-            logger.info(f"Super Admin account '{settings.SUPER_ADMIN_EMAIL}' (ID: {actual_user_id}) verified/seeded successfully.")
+            # 5. Seed System Fallback Guest User (00000000-0000-0000-0000-000000000000)
+            fallback_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
+            await conn.execute(
+                """
+                INSERT INTO users (id, email, password_hash, role_id, full_name, username) 
+                VALUES ($1, 'guest@echostack.internal', 'no_password_guest_account', 0, 'System Guest', 'guest')
+                ON CONFLICT (id) DO NOTHING;
+                """,
+                fallback_uuid
+            )
+            await conn.execute(
+                "INSERT INTO user_profiles (user_id, usage_tier) VALUES ($1, 'guest') ON CONFLICT (user_id) DO NOTHING;",
+                fallback_uuid
+            )
+            await conn.execute(
+                "INSERT INTO user_analytics (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING;",
+                fallback_uuid
+            )
+
+            logger.info(f"Super Admin account '{settings.SUPER_ADMIN_EMAIL}' and Fallback Guest account verified/seeded successfully.")
     except Exception as e:
         logger.error(f"Failed to seed Super Admin account: {e}")
 
@@ -113,20 +133,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {e}")
         
-    logger.info("Initializing Kafka Producer...")
-    try:
-        kafka_producer = KafkaProducer(
-            bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            acks="all",
-            retries=1,
-            max_block_ms=1000,
-            request_timeout_ms=1000,
-            api_version_auto_timeout_ms=1000
-        )
-        logger.info("Kafka Producer initialized successfully.")
-    except Exception as e:
-        logger.warning(f"Kafka Producer initialization skipped or timed out: {e}")
+    if settings.ENABLE_KAFKA:
+        logger.info("Initializing Kafka Producer...")
+        try:
+            kafka_producer = KafkaProducer(
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                acks="all",
+                retries=1,
+                max_block_ms=1000,
+                request_timeout_ms=1000,
+                api_version_auto_timeout_ms=1000
+            )
+            logger.info("Kafka Producer initialized successfully.")
+        except Exception as e:
+            logger.warning(f"Kafka Producer initialization skipped or timed out: {e}")
+            kafka_producer = None
+    else:
+        logger.info("Kafka Producer disabled via ENABLE_KAFKA=false (Local Development Mode).")
         kafka_producer = None
     
     yield
@@ -174,6 +198,7 @@ app.add_middleware(
 # Include Super Admin router & Users API router
 app.include_router(super_admin_router)
 app.include_router(users_router)
+app.include_router(cards_router)
 
 @app.get("/auth/super-admin-token")
 async def get_super_admin_token():
@@ -215,6 +240,7 @@ async def upload_document(
     Saves an uploaded document PDF locally, registers a PENDING entry in PostgreSQL,
     and publishes an ingestion job payload to Kafka.
     """
+    global kafka_producer
     langfuse_context.update_current_trace(
         name="upload-document-api",
         user_id=user_id,
@@ -276,24 +302,7 @@ async def upload_document(
             detail=f"Database initialization failed: {str(e)}"
         )
 
-    # 3. Publish payload event to Kafka
-    if kafka_producer is None:
-        try:
-            kafka_producer = KafkaProducer(
-                bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                acks="all",
-                retries=2,
-                max_block_ms=3000,
-                request_timeout_ms=3000
-            )
-        except Exception as e:
-            logger.error(f"Kafka Producer reconnection failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Asynchronous streaming queue unavailable."
-            )
-
+    # 3. Publish payload event to Kafka (with graceful local fallback)
     event_payload = {
         "doc_id": str(doc_id),
         "user_id": str(user_uuid),
@@ -301,27 +310,35 @@ async def upload_document(
         "file_name": file.filename
     }
 
-    logger.info(f"Publishing ingestion job for doc {doc_id} to topic '{settings.KAFKA_INGESTION_TOPIC}'...")
-    try:
-        kafka_producer.send(settings.KAFKA_INGESTION_TOPIC, event_payload)
-        kafka_producer.flush()
-    except Exception as e:
-        logger.error(f"Failed to publish event to Kafka: {e}")
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE documents SET status = 'FAILED' WHERE id = $1",
-                doc_id
+    if settings.ENABLE_KAFKA and kafka_producer is None:
+        try:
+            kafka_producer = KafkaProducer(
+                bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS.split(","),
+                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+                acks="all",
+                retries=1,
+                max_block_ms=1000,
+                request_timeout_ms=1000
             )
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to register background ingestion task: {str(e)}"
-        )
+        except Exception as kafka_init_err:
+            logger.warning(f"Kafka Producer unavailable: {kafka_init_err}. Local fallback mode active.")
+
+    if kafka_producer is not None:
+        try:
+            logger.info(f"Publishing ingestion job for doc {doc_id} to topic '{settings.KAFKA_INGESTION_TOPIC}'...")
+            kafka_producer.send(settings.KAFKA_INGESTION_TOPIC, event_payload)
+            kafka_producer.flush()
+        except Exception as e:
+            logger.warning(f"Failed to publish event to Kafka broker: {e}")
+            kafka_producer = None
+    else:
+        logger.info(f"Kafka queue offline. Document {doc_id} registered in database as PENDING.")
 
     return {
         "document_id": str(doc_id),
         "file_name": file.filename,
         "status": "PENDING",
-        "message": "Document uploaded successfully. Processing started in background."
+        "message": "Document uploaded successfully and registered for processing."
     }
 
 @app.get("/documents")

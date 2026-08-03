@@ -19,6 +19,20 @@ logger = logging.getLogger("backend-agent")
 # Singleton holder for SentenceTransformer
 _embed_model: Optional[SentenceTransformer] = None
 
+def format_dual_payload(voice_text: str, component: str, data: Dict[str, Any]) -> str:
+    """
+    Formats a tool response into a standardized dual-payload JSON string.
+    Contains voice_text (spoken by Gemini Live) and ui_card (rendered by React frontend).
+    """
+    import json
+    return json.dumps({
+        "voice_text": voice_text,
+        "ui_card": {
+            "component": component,
+            "data": data
+        }
+    })
+
 def get_embedding_model() -> SentenceTransformer:
     """Loads the SentenceTransformer model on GPU/CUDA if available, otherwise CPU."""
     global _embed_model
@@ -67,15 +81,32 @@ async def query_user_analytics() -> str:
             import json
             top_topics_val = row["top_topics"]
             if isinstance(top_topics_val, str):
-                topics_str = top_topics_val
+                try:
+                    topics_data = json.loads(top_topics_val)
+                except Exception:
+                    topics_data = top_topics_val
             else:
-                topics_str = json.dumps(top_topics_val)
+                topics_data = top_topics_val or []
 
-            res = (
-                f"User Analytics Insights:\n"
-                f"- Total Interactions: {row['total_interactions']}\n"
-                f"- Top Topics: {topics_str}\n"
-                f"- Last Updated: {row['last_updated_at']}"
+            topics_summary = json.dumps(topics_data) if not isinstance(topics_data, str) else topics_data
+
+            voice_summary = (
+                f"User analytics retrieved for your account. "
+                f"Total interactions: {row['total_interactions']}, "
+                f"top active topics: {topics_summary}."
+            )
+
+            card_data = {
+                "total_interactions": row["total_interactions"],
+                "top_topics": topics_data,
+                "last_updated_at": str(row["last_updated_at"]),
+                "user_id": str(user_id)
+            }
+
+            res = format_dual_payload(
+                voice_text=voice_summary,
+                component="AnalyticsMetricsCard",
+                data=card_data
             )
             langfuse_context.update_current_observation(output=res)
             return res
@@ -194,18 +225,40 @@ async def rag_knowledge_search(query: str) -> str:
             # Sort candidate chunks by RRF score
             sorted_candidates = sorted(scores.values(), key=lambda x: x["rrf_score"], reverse=True)[:5]
 
-            results = []
+            results_for_card = []
             for idx, item in enumerate(sorted_candidates):
                 sec_title = item['metadata'].get('section_title', 'General')
                 fmt = item['metadata'].get('file_format', 'txt').upper()
-                results.append(
-                    f"Result {idx+1} [Format: {fmt} | Section: {sec_title} | RRF Score: {item['rrf_score']:.4f}]:\n"
-                    f"{item['chunk_text']}"
-                )
+                results_for_card.append({
+                    "id": idx + 1,
+                    "section_title": sec_title,
+                    "file_format": fmt,
+                    "rrf_score": round(item['rrf_score'], 4),
+                    "snippet": item['chunk_text']
+                })
 
-            res_str = "\n\n".join(results)
-            langfuse_context.update_current_observation(output=res_str)
-            return res_str
+            top_sec = results_for_card[0]['section_title'] if results_for_card else "General"
+            top_fmt = results_for_card[0]['file_format'] if results_for_card else "TXT"
+            top_snip = results_for_card[0]['snippet'][:120] if results_for_card else ""
+
+            voice_summary = (
+                f"Knowledge base search for '{query}' returned {len(results_for_card)} relevant document chunks. "
+                f"Top match found in section '{top_sec}' ({top_fmt}): {top_snip}..."
+            )
+
+            card_data = {
+                "query": query,
+                "total_results": len(results_for_card),
+                "results": results_for_card
+            }
+
+            res = format_dual_payload(
+                voice_text=voice_summary,
+                component="DocumentSearchCard",
+                data=card_data
+            )
+            langfuse_context.update_current_observation(output=res)
+            return res
     except Exception as e:
         logger.error(f"Error during Hybrid RAG search: {e}")
         return f"Error executing search: {str(e)}"
@@ -321,6 +374,7 @@ async def python_code_interpreter(code: str) -> str:
             except Exception:
                 pass
             
+            output_buffer.clear()
             exec(clean_code, safe_globals, safe_locals)
             if output_buffer:
                 return "\n".join(output_buffer)
@@ -330,13 +384,35 @@ async def python_code_interpreter(code: str) -> str:
             return "Code executed successfully with no output."
 
         result_str = await loop.run_in_executor(None, _eval)
-        langfuse_context.update_current_observation(output=result_str)
-        return f"Execution Output:\n{result_str}"
+        voice_summary = f"Python sandbox code executed successfully. Output: {result_str}"
+        card_data = {
+            "code": code,
+            "output": result_str,
+            "status": "success"
+        }
+        res = format_dual_payload(
+            voice_text=voice_summary,
+            component="PythonResultCard",
+            data=card_data
+        )
+        langfuse_context.update_current_observation(output=res)
+        return res
     except Exception as e:
         logger.error(f"Python code execution error: {e}")
         err_out = f"Execution Error: {str(e)}"
-        langfuse_context.update_current_observation(output=err_out)
-        return err_out
+        voice_summary = f"Python code execution failed: {str(e)}"
+        card_data = {
+            "code": code,
+            "output": err_out,
+            "status": "error"
+        }
+        res = format_dual_payload(
+            voice_text=voice_summary,
+            component="PythonResultCard",
+            data=card_data
+        )
+        langfuse_context.update_current_observation(output=res)
+        return res
 
 
 def load_system_session_prompt(full_name: Optional[str] = None) -> str:

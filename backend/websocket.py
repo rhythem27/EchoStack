@@ -98,9 +98,10 @@ async def authenticate_websocket(token: str) -> dict:
     }
 
 @observe(name="live-tool-execution", as_type="span")
-async def execute_live_tool(name: str, args: dict, user_context: dict) -> str:
+async def execute_live_tool(name: str, args: dict, user_context: dict, websocket: Optional[WebSocket] = None) -> str:
     """
-    Sets local contextvars, calls the requested tool asynchronously, and returns the response.
+    Sets local contextvars, calls the requested tool asynchronously, broadcasts RENDER_UI_CARD
+    WebSocket frames if a dynamic UI payload is present, and returns clean voice summary text.
     """
     current_user_id.set(user_context["user_id"])
     current_user_permissions.set(user_context["permissions"])
@@ -131,8 +132,31 @@ async def execute_live_tool(name: str, args: dict, user_context: dict) -> str:
         else:
             res = f"Error: Tool '{name}' is not supported."
         
-        langfuse_context.update_current_observation(output=res)
-        return res
+        # Dual-Payload Parsing: check if result contains UI Card payload + Voice summary
+        voice_text = res
+        ui_card_payload = None
+        if isinstance(res, str) and "ui_card" in res and res.strip().startswith("{"):
+            try:
+                parsed = json.loads(res)
+                if isinstance(parsed, dict) and "ui_card" in parsed and "voice_text" in parsed:
+                    voice_text = parsed["voice_text"]
+                    ui_card_payload = parsed["ui_card"]
+            except Exception as parse_err:
+                logger.debug(f"Tool output JSON parse skipped: {parse_err}")
+
+        if ui_card_payload and websocket:
+            try:
+                logger.info(f"Broadcasting RENDER_UI_CARD event for component: {ui_card_payload.get('component')}")
+                await websocket.send_json({
+                    "type": "RENDER_UI_CARD",
+                    "component": ui_card_payload.get("component"),
+                    "data": ui_card_payload.get("data")
+                })
+            except Exception as ws_err:
+                logger.warning(f"Failed to send RENDER_UI_CARD frame over websocket: {ws_err}")
+
+        langfuse_context.update_current_observation(output=voice_text)
+        return voice_text
     except Exception as e:
         logger.error(f"Error during tool execution: {e}")
         err_msg = f"Error executing tool: {str(e)}"
@@ -378,7 +402,7 @@ async def websocket_speech_proxy(websocket: WebSocket, token: Optional[str] = No
                                     except Exception:
                                         pass
 
-                                    tool_result = await execute_live_tool(call.name, call.args, user_context)
+                                    tool_result = await execute_live_tool(call.name, call.args, user_context, websocket=websocket)
                                     
                                     try:
                                         await websocket.send_json({

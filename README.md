@@ -31,6 +31,7 @@
 - **Dual-Agent Architecture**:
   - **System 1 (Agent Orchestrator)**: LangChain-powered tool execution agent for hybrid RAG search, database querying, web searching, and sandboxed Python code interpretation.
   - **System 2 (Speech-to-Speech Engine)**: Real-time bidirectional WebSocket proxy interfacing directly with Google Gemini Live API for sub-second voice and visual interaction.
+- **Dual-Payload Generative UI Protocol**: Emits voice-triggered interactive UI card payloads (`AnalyticsMetricsCard`, `DocumentSearchCard`, `PythonResultCard`) over WebSockets while streaming natural language audio output.
 - **Asynchronous Document Pipeline**: Kafka-driven document parsing and vector embedding pipeline, isolating background ingestion tasks from client-facing REST APIs.
 - **Distributed Big Data Analytics**: Containerized PySpark cluster performing scheduled batch aggregations and writing user engagement metrics back to PostgreSQL.
 - **Full Observability**: End-to-end tracing across LLM calls, retriever lookups, tool executions, and voice streaming via self-hosted/cloud **Langfuse**.
@@ -96,9 +97,15 @@ You can interact with **EchoStack** via speech (voice), text, or live camera fee
 
 ### 🎙️ 1. Real-Time Speech & User Analytics
 - **"Hey Echo, show me a summary of my account analytics and total interaction history for this week."**
-  - *Behind the scenes*: Triggers `query_user_analytics` to query PostgreSQL DB and speak back an executive summary.
+  - *Behind the scenes*: Triggers `query_user_analytics` to query PostgreSQL DB, emits an interactive `AnalyticsMetricsCard` UI widget over WebSockets, and speaks an executive voice summary.
 - **"What are my current account permissions and assigned security roles?"**
   - *Behind the scenes*: Checks RBAC permissions cached in Redis for fast validation.
+
+### 🎨 2. Voice-Triggered Dynamic UI Cards (Generative UI Protocol)
+- **"Search knowledge base for deployment guides and architecture setup."**
+  - *Behind the scenes*: Executes `rag_knowledge_search` hybrid RAG retriever, emitting a clickable `DocumentSearchCard` with document format badges (`PDF`, `DOCX`), RRF relevance scores, and expandable snippet dropdowns directly into the chat timeline.
+- **"Calculate compound growth on $10,000 at 7.5% over 5 years using Python."**
+  - *Behind the scenes*: Executes `python_code_interpreter`, mounting a `PythonResultCard` with code syntax highlighting, console output logs, and one-click copy buttons.
 
 ### 👁️ 2. Multimodal Camera & Spatial Object Detection
 - **"Look at what I am holding in front of the camera — identify the object and draw a bounding box around it."**
@@ -125,6 +132,13 @@ You can interact with **EchoStack** via speech (voice), text, or live camera fee
 
 ## 🛠️ Key Capabilities & Features
 
+### 🎨 Voice-Triggered Dynamic UI Cards (Generative UI Protocol)
+- **Dual-Payload Event Multiplexing**: Tools emit structured JSON UI metadata (`ui_card`) alongside text summaries (`voice_text`). The WebSocket proxy pushes `RENDER_UI_CARD` events to the React client while sending clean voice summaries to Gemini Live for natural speech output.
+- **Interactive Component Cards**:
+  - `AnalyticsMetricsCard`: Displays user interaction metrics, activity score progress bar, topic chips, and sync timestamps.
+  - `DocumentSearchCard`: Renders RAG search results with format tags (`PDF`, `DOCX`, `TXT`), Reciprocal Rank Fusion (RRF) relevance scores, and expandable snippet views.
+  - `PythonResultCard`: Dark code block (`Python 3.11`), output console stream, execution status badge, and copy buttons.
+
 ### 🎙️ Speech-to-Speech & Multimodal Vision
 - **16kHz Int16 Downsampling**: Client-side `AudioWorklet` processor downsamples microphone input to 16kHz Int16 PCM chunks for low-overhead transmission.
 - **24kHz High-Quality Audio Playback**: Incoming audio buffers are queued and scheduled via Web Audio API for smooth 24kHz voice output.
@@ -150,21 +164,27 @@ You can interact with **EchoStack** via speech (voice), text, or live camera fee
 ```text
 EchoStack/
 ├── backend/                  # FastAPI Core Gateway & Services
-│   ├── api/                  # REST Endpoint Routers (Users, Auth, RAG)
-│   ├── agent.py              # System 1 LangChain Agent & RAG Retriever
+│   ├── api/                  # REST Endpoint Routers (Users, Auth, RAG, Cards)
+│   │   ├── cards.py          # UI Cards API Schema & Template Endpoints
+│   │   ├── super_admin.py    # Super Admin Management Endpoints
+│   │   └── users.py          # User Identity & Token Endpoints
+│   ├── agent.py              # System 1 LangChain Agent & Dual-Payload Tools
 │   ├── analytics_job.py      # Apache Spark PySpark ETL Analytics Job
 │   ├── auth.py               # JWT Validation & Redis Permission Cache
 │   ├── db.py                 # PostgreSQL asyncpg Connection Pooling
-│   ├── main.py               # FastAPI App & Database Seeding
-│   ├── websocket.py          # Gemini Live Speech-to-Speech WS Proxy
+│   ├── main.py               # FastAPI App & Router Integration
+│   ├── websocket.py          # Gemini Live Speech Proxy & UI Event Multiplexer
 │   └── worker.py             # Kafka Document Processing Worker
 ├── frontend/                 # React 18 Web Application
 │   ├── src/
-│   │   ├── App.jsx           # Multimodal Workspace Dashboard
+│   │   ├── App.jsx           # Multimodal Workspace Dashboard & Card Listener
 │   │   ├── components/       # KnowledgeManager, AuthModal, VisionOverlay
-│   │   └── index.css         # Styling & Design Tokens
+│   │   │   └── UICards/      # AnalyticsMetricsCard, DocumentSearchCard, PythonResultCard
+│   │   └── App.css           # Glassmorphism Styling & UI Card Animations
 │   └── public/
 │       └── audio-processor.js # AudioWorklet Downsampler (16kHz PCM)
+├── scripts/                  # Automated Test & Verification Scripts
+│   └── test_phase11_dual_payload.py # Dual-Payload Protocol Test Suite
 ├── prompts/                  # System Prompts & Instruction Templates
 │   └── system_session_prompt.md # Master Session System Prompt (Echo Persona)
 ├── postgres/                 # Database Initialization Scripts
@@ -239,9 +259,13 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 ## 🧪 System Verification & Testing
 
 ### Automated Test Suite
-Run backend unit and integration tests:
+Run backend unit, integration, and dual-payload protocol tests:
 ```bash
+# Run pytest test suite
 poetry run pytest
+
+# Run Phase 11 Dual-Payload Protocol verification
+poetry run python scripts/test_phase11_dual_payload.py
 ```
 
 ### Trigger PySpark Analytics Job

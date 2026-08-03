@@ -31,6 +31,7 @@ import KnowledgeManager from './components/KnowledgeManager';
 import FrameDeduplicator from './utils/frameDeduplicator';
 import VisionOverlay from './components/VisionOverlay';
 import AuthModal from './components/AuthModal';
+import UICardDispatcher from './components/UICards/UICardDispatcher';
 import './App.css';
 
 // Converts Float32 audio samples back into 16-bit PCM arrays
@@ -349,6 +350,23 @@ function App() {
     }
   };
 
+  const handleDeleteDocument = async (e, docId, fileName) => {
+    e.stopPropagation();
+    if (!window.confirm(`Are you sure you want to delete "${fileName}"?`)) return;
+
+    try {
+      const res = await fetch(`${backendUrl}/documents/${docId}`, { method: 'DELETE' });
+      if (res.ok) {
+        addLog(`Deleted document "${fileName}"`, 'info');
+        fetchDocuments();
+      } else {
+        addLog(`Failed to delete document "${fileName}"`, 'error');
+      }
+    } catch (err) {
+      addLog(`Error deleting document: ${err.message}`, 'error');
+    }
+  };
+
   // Poll for document updates when active
   useEffect(() => {
     if (activeTab === 'documents' || isKmOpen) {
@@ -385,18 +403,39 @@ function App() {
     formData.append('user_id', authUser?.id || '00000000-0000-0000-0000-000000000000');
 
     try {
-      const res = await fetch(`${backendUrl}/upload-document`, {
-        method: 'POST',
-        body: formData,
-      });
+      let res;
+      try {
+        res = await fetch(`${backendUrl}/upload-document`, {
+          method: 'POST',
+          body: formData,
+        });
+      } catch (fetchErr) {
+        const altUrl = backendUrl.includes('localhost')
+          ? backendUrl.replace('localhost', '127.0.0.1')
+          : (backendUrl.includes('127.0.0.1') ? backendUrl.replace('127.0.0.1', 'localhost') : 'http://localhost:8000');
+        addLog(`Primary upload URL unreachable. Trying fallback: ${altUrl}...`, 'warning');
+        res = await fetch(`${altUrl}/upload-document`, {
+          method: 'POST',
+          body: formData,
+        });
+        setBackendUrl(altUrl);
+      }
 
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        let errDetail = `HTTP ${res.status}`;
+        try {
+          const errData = await res.json();
+          if (errData.detail) errDetail = typeof errData.detail === 'string' ? errData.detail : JSON.stringify(errData.detail);
+        } catch (e) {}
+        throw new Error(errDetail);
+      }
+
       const data = await res.json();
       setUploadStatus({ type: 'success', text: `Document submitted! ID: ${data.document_id}` });
       addLog(`RAG job accepted. Ingestion status: ${data.status}`, 'info');
       fetchDocuments();
     } catch (err) {
-      setUploadStatus({ type: 'error', text: `Upload failed: ${err.message}` });
+      setUploadStatus({ type: 'error', text: `Upload failed: ${err.message}. Check backend connection.` });
       addLog(`Failed to upload document: ${err.message}`, 'error');
     } finally {
       setUploading(false);
@@ -594,6 +633,20 @@ function App() {
         }
         else if (msg.type === 'spatial_highlight') {
           triggerSpatialHighlight(msg.label, msg.box_2d);
+        }
+        else if (msg.type === 'RENDER_UI_CARD') {
+          const newCardItem = {
+            id: `card-${Date.now()}-${Math.random()}`,
+            sender: 'ai',
+            type: 'ui_card',
+            cardPayload: {
+              component: msg.component,
+              data: msg.data
+            },
+            time: new Date().toLocaleTimeString()
+          };
+          setTranscripts((prev) => [...prev, newCardItem]);
+          addLog(`Dynamic UI Card mounted: [${msg.component}]`, 'info');
         }
         else if (msg.type === 'tool_call') {
           const label = TOOL_LABELS[msg.tool_name] || `Executing ${msg.tool_name}...`;
@@ -852,12 +905,21 @@ function App() {
               ) : (
                 <ul className="doc-list">
                   {documents.map((doc) => (
-                    <li key={doc.id} className="doc-item" onClick={() => setIsKmOpen(true)} style={{ cursor: 'pointer' }}>
-                      <FileText size={18} className="doc-icon" />
-                      <div className="doc-details">
-                        <span className="doc-name">{doc.file_name}</span>
-                        <span className={`doc-status status-${doc.status.toLowerCase()}`}>{doc.status}</span>
+                    <li key={doc.id} className="doc-item flex items-center justify-between" onClick={() => setIsKmOpen(true)} style={{ cursor: 'pointer' }}>
+                      <div className="flex items-center gap-2 min-w-0 flex-grow">
+                        <FileText size={18} className="doc-icon flex-shrink-0" />
+                        <div className="doc-details min-w-0">
+                          <span className="doc-name truncate">{doc.file_name}</span>
+                          <span className={`doc-status status-${doc.status.toLowerCase()}`}>{doc.status}</span>
+                        </div>
                       </div>
+                      <button
+                        onClick={(e) => handleDeleteDocument(e, doc.id, doc.file_name)}
+                        className="delete-doc-btn"
+                        title="Delete Document"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -1037,14 +1099,26 @@ function App() {
                   No transcripts recorded yet. Start live speech session to stream audio conversation.
                 </div>
               ) : (
-                transcripts.map((t) => (
-                  <div
-                    key={t.id}
-                    className={`transcript-bubble transcript-bubble-${t.sender === 'user' ? 'user' : 'ai'}`}
-                  >
-                    {t.text}
-                  </div>
-                ))
+                transcripts.map((t) => {
+                  if (t.type === 'ui_card' && t.cardPayload) {
+                    return (
+                      <div key={t.id} className="transcript-card-container">
+                        <UICardDispatcher
+                          component={t.cardPayload.component}
+                          data={t.cardPayload.data}
+                        />
+                      </div>
+                    );
+                  }
+                  return (
+                    <div
+                      key={t.id}
+                      className={`transcript-bubble transcript-bubble-${t.sender === 'user' ? 'user' : 'ai'}`}
+                    >
+                      {t.text}
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
