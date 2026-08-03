@@ -438,6 +438,15 @@ async def delete_document(doc_id: str):
             if result == "DELETE 0":
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
+            # Clean up local file from disk
+            if os.path.exists(settings.UPLOAD_DIR):
+                for f in os.listdir(settings.UPLOAD_DIR):
+                    if f.startswith(doc_id):
+                        try:
+                            os.remove(os.path.join(settings.UPLOAD_DIR, f))
+                        except Exception as file_err:
+                            logger.warning(f"Failed to remove upload file {f}: {file_err}")
+
             return {"message": f"Document {doc_id} and its associated vectors deleted successfully."}
     except HTTPException:
         raise
@@ -448,14 +457,24 @@ async def delete_document(doc_id: str):
 @app.delete("/documents")
 async def clear_knowledge_base():
     """
-    Clears all documents and vector knowledge base records.
+    Wipes the entire vector knowledge base and document registry.
     """
     pool = await get_db_pool()
     try:
         async with pool.acquire() as conn:
-            await conn.execute("DELETE FROM vector_knowledge")
             await conn.execute("DELETE FROM documents")
-            return {"message": "Knowledge base cleared successfully."}
+            
+            # Clean up all local upload files
+            if os.path.exists(settings.UPLOAD_DIR):
+                for f in os.listdir(settings.UPLOAD_DIR):
+                    try:
+                        file_path = os.path.join(settings.UPLOAD_DIR, f)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                    except Exception as file_err:
+                        logger.warning(f"Failed to clear upload file {f}: {file_err}")
+
+            return {"message": "Knowledge base and local uploads wiped successfully."}
     except Exception as e:
         logger.error(f"Failed to clear knowledge base: {e}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

@@ -35,8 +35,23 @@ class IngestionWorker:
         logger.info(f"Initializing SentenceTransformer BAAI/bge-small-en-v1.5 on device: {device}...")
         self.embed_model = SentenceTransformer("BAAI/bge-small-en-v1.5", device=device)
         
-        logger.info("Initializing IBM Docling Document Converter...")
-        self.doc_converter = DocumentConverter()
+        logger.info("Initializing IBM Docling Document Converter with fast pipeline options...")
+        try:
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.base_models import InputFormat
+
+            pipeline_options = PdfPipelineOptions()
+            pipeline_options.do_ocr = False
+            pipeline_options.do_table_structure = False
+
+            self.doc_converter = DocumentConverter(
+                format_options={
+                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                }
+            )
+        except Exception:
+            self.doc_converter = DocumentConverter()
         
         self.consumer = None
         if getattr(settings, 'ENABLE_KAFKA', False):
@@ -163,8 +178,64 @@ class IngestionWorker:
                 logger.info(f"Fast-path reading plain text document ({ext})...")
                 with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                     markdown_text = f.read()
+            elif ext == ".pdf":
+                logger.info(f"Fast-path extracting PDF document ({file_name})...")
+                markdown_text = None
+                try:
+                    import pypdf
+                    reader = pypdf.PdfReader(file_path)
+                    pages_text = []
+                    for idx, page in enumerate(reader.pages):
+                        t = page.extract_text()
+                        if t and t.strip():
+                            pages_text.append(f"## Page {idx+1}\n\n{t.strip()}")
+                    if pages_text:
+                        markdown_text = "\n\n".join(pages_text)
+                except Exception as pypdf_err:
+                    logger.warning(f"pypdf extraction fallback: {pypdf_err}")
+
+                if not markdown_text:
+                    logger.info("Falling back to Docling converter for PDF...")
+                    conversion_result = await self.loop.run_in_executor(
+                        self.executor,
+                        self.doc_converter.convert,
+                        file_path
+                    )
+                    markdown_text = conversion_result.document.export_to_markdown()
+            elif ext == ".docx":
+                logger.info(f"Fast-path extracting DOCX document ({file_name})...")
+                try:
+                    import docx
+                    doc = docx.Document(file_path)
+                    paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+                    markdown_text = "\n\n".join(paragraphs)
+                except Exception:
+                    conversion_result = await self.loop.run_in_executor(
+                        self.executor,
+                        self.doc_converter.convert,
+                        file_path
+                    )
+                    markdown_text = conversion_result.document.export_to_markdown()
+            elif ext == ".pptx":
+                logger.info(f"Fast-path extracting PPTX document ({file_name})...")
+                try:
+                    import pptx
+                    prs = pptx.Presentation(file_path)
+                    slides_text = []
+                    for s_idx, slide in enumerate(prs.slides):
+                        slide_words = [shape.text.strip() for shape in slide.shapes if hasattr(shape, "text") and shape.text.strip()]
+                        if slide_words:
+                            slides_text.append(f"## Slide {s_idx+1}\n\n" + "\n".join(slide_words))
+                    markdown_text = "\n\n".join(slides_text)
+                except Exception:
+                    conversion_result = await self.loop.run_in_executor(
+                        self.executor,
+                        self.doc_converter.convert,
+                        file_path
+                    )
+                    markdown_text = conversion_result.document.export_to_markdown()
             else:
-                logger.info(f"Running IBM Docling layout analysis for rich document ({ext})...")
+                logger.info(f"Running IBM Docling layout analysis for document ({ext})...")
                 conversion_result = await self.loop.run_in_executor(
                     self.executor,
                     self.doc_converter.convert,
