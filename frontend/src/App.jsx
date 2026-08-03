@@ -127,7 +127,7 @@ function App() {
   const [backendUrl, setBackendUrl] = useState('http://127.0.0.1:8000');
   const [token, setToken] = useState('');
   const [permissions, setPermissions] = useState(null);
-  
+
   // Dashboard Statuses
   const [sessionState, setSessionState] = useState('disconnected'); // disconnected, connecting, connected, error
   const [agentState, setAgentState] = useState('idle'); // idle, listening (user talking), speaking (agent speaking)
@@ -139,7 +139,7 @@ function App() {
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
   const [isKmOpen, setIsKmOpen] = useState(false);
-  
+
   // Multimodal Vision & Tools State
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isScreenShareActive, setIsScreenShareActive] = useState(false);
@@ -187,7 +187,7 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [latency, setLatency] = useState(0);
   const [rttStart, setRttStart] = useState(null);
-  
+
   // Audio, Video & Socket References
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -305,8 +305,8 @@ function App() {
       try {
         res = await fetch(`${backendUrl}/auth/token`);
       } catch (err) {
-        const altUrl = backendUrl.includes('localhost') 
-          ? backendUrl.replace('localhost', '127.0.0.1') 
+        const altUrl = backendUrl.includes('localhost')
+          ? backendUrl.replace('localhost', '127.0.0.1')
           : 'http://localhost:8000';
         addLog(`Primary endpoint unreachable. Trying fallback: ${altUrl}...`, 'warning');
         res = await fetch(`${altUrl}/auth/token`);
@@ -316,7 +316,7 @@ function App() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAuthToken(data.token);
-      
+
       // Decode JWT payload locally to extract roles/permissions
       const payloadBase64 = data.token.split('.')[1];
       const payloadDecoded = JSON.parse(window.atob(payloadBase64));
@@ -367,10 +367,10 @@ function App() {
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    
+
     const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.pptx'];
     const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
-    
+
     if (!allowed.includes(ext)) {
       setUploadStatus({ type: 'error', text: `Unsupported file format. Allowed: ${allowed.join(', ')}` });
       return;
@@ -422,7 +422,7 @@ function App() {
   const playIncomingAudioChunk = (float32Array) => {
     if (!audioContextRef.current) return;
     const ctx = audioContextRef.current;
-    
+
     if (ctx.state === 'suspended') {
       ctx.resume();
     }
@@ -442,7 +442,7 @@ function App() {
     // If scheduled time is behind current time (queue empty/underrun), catch up
     if (startTime < currentTime) {
       // 50ms safety offset to avoid clipping
-      startTime = currentTime + 0.05; 
+      startTime = currentTime + 0.05;
     }
 
     sourceNode.start(startTime);
@@ -468,7 +468,7 @@ function App() {
 
     setSessionState('connecting');
     addLog('Starting speech session sequence...', 'info');
-    
+
     let stream = null;
     try {
       // 1. Request microphone access first
@@ -501,12 +501,12 @@ function App() {
           addLog('Authenticated with active user session token.', 'info');
         }
       }
-      
+
       // Establish WebSocket
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsHost = backendUrl.replace(/^https?:\/\//, '');
       const wsUrl = `${wsProtocol}//${wsHost}/ws/speech?token=${activeToken}`;
-      
+
       addLog(`Connecting to secure speech WebSocket proxy...`, 'info');
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -541,7 +541,7 @@ function App() {
 
           const source = audioCtx.createMediaStreamSource(stream);
           source.connect(workletNode);
-          
+
           // Listen to worklet output (downsampled Int16 array buffers)
           workletNode.port.onmessage = (event) => {
             if (isMuted) return;
@@ -556,7 +556,7 @@ function App() {
                 type: 'audio_chunk',
                 data: b64Audio
               }));
-              
+
               if (!rttStart) {
                 setRttStart(performance.now());
               }
@@ -572,7 +572,7 @@ function App() {
 
       ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
-        
+
         // Task B: Receive responses
         if (msg.type === 'audio_chunk') {
           // Calculate simple latency metrics
@@ -584,10 +584,10 @@ function App() {
 
           // Decode base64 24kHz Int16 to Float32 AudioBuffer
           const float32Audio = base64ToFloat32Array(msg.data);
-          
+
           // Stream block to AudioContext
           playIncomingAudioChunk(float32Audio);
-        } 
+        }
         else if (msg.type === 'interrupted') {
           // Barge-in Interruption Signal from VAD
           flushPlaybackQueue();
@@ -638,7 +638,7 @@ function App() {
 
     try {
       if (isScreenShareActive) stopVideoStreaming();
-      
+
       addLog('Requesting webcam access...', 'info');
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { max: 5 } }
@@ -768,8 +768,8 @@ function App() {
               <span className={`user-role-pill user-role-${authUser.role_name}`}>
                 {authUser.role_name}
               </span>
-              <button 
-                onClick={handleLogout} 
+              <button
+                onClick={handleLogout}
                 className="header-logout-btn flex items-center gap-1"
                 title="Sign Out"
               >
@@ -778,8 +778,8 @@ function App() {
               </button>
             </div>
           ) : (
-            <button 
-              onClick={() => setIsAuthOpen(true)} 
+            <button
+              onClick={() => setIsAuthOpen(true)}
               className="btn btn-primary text-xs py-half px-3 flex items-center gap-1"
               style={{ fontSize: '0.82rem', padding: '0.4rem 0.85rem' }}
             >
@@ -792,33 +792,33 @@ function App() {
 
       {/* Main Grid Content */}
       <div className="portal-grid">
-        
+
         {/* Left column: Configuration and RAG Knowledge Base */}
         <section className="portal-column glass-card">
           <div className="column-header">
             <Database size={20} className="header-icon-blue" />
             <h2>Document Ingestion (RAG)</h2>
           </div>
-          
+
           <div className="card-body">
             <div className="form-group">
               <label>Gateway Endpoint</label>
-              <input 
-                type="text" 
-                value={backendUrl} 
-                onChange={(e) => setBackendUrl(e.target.value)} 
-                disabled={sessionState === 'connected'} 
+              <input
+                type="text"
+                value={backendUrl}
+                onChange={(e) => setBackendUrl(e.target.value)}
+                disabled={sessionState === 'connected'}
                 className="text-input"
               />
             </div>
 
             <div className="drag-upload-zone">
-              <input 
-                type="file" 
-                id="doc-uploader" 
-                accept=".pdf,.docx,.txt,.csv,.md,.pptx" 
-                onChange={handleFileUpload} 
-                className="hidden-input" 
+              <input
+                type="file"
+                id="doc-uploader"
+                accept=".pdf,.docx,.txt,.csv,.md,.pptx"
+                onChange={handleFileUpload}
+                className="hidden-input"
                 disabled={uploading}
               />
               <label htmlFor="doc-uploader" className="upload-label">
@@ -838,7 +838,7 @@ function App() {
             <div className="document-list-container">
               <div className="flex items-center justify-between mb-2">
                 <h3>Indexed System Files</h3>
-                <button 
+                <button
                   onClick={() => setIsKmOpen(true)}
                   className="btn btn-secondary py-half px-2 text-xs flex items-center gap-1"
                   style={{ fontSize: '0.75rem', padding: '0.25rem 0.6rem' }}
@@ -888,13 +888,13 @@ function App() {
                 <span className="text-xs font-mono text-zinc-400">1 FPS JPEG Input</span>
               </div>
               <div className="video-viewport">
-                <video 
+                <video
                   ref={(el) => {
                     if (el && videoStreamRef.current) el.srcObject = videoStreamRef.current;
-                  }} 
-                  autoPlay 
-                  playsInline 
-                  muted 
+                  }}
+                  autoPlay
+                  playsInline
+                  muted
                 />
                 <VisionOverlay highlights={spatialHighlights} />
               </div>
@@ -915,7 +915,7 @@ function App() {
                   <Play size={48} className="icon-state text-zinc-500" />
                 </div>
               )}
-              
+
               {/* Radial animated ripples for speaking and listening */}
               {agentState === 'speaking' && (
                 <>
@@ -939,13 +939,13 @@ function App() {
                 <span className="tool-dot"></span>
               </div>
             )}
-            
+
             <div className="state-descriptor">
               {sessionState === 'connected' ? (
                 <>
                   <span className="state-title capitalize">{agentState}</span>
                   <span className="state-subtitle">
-                    {agentState === 'speaking' && 'Gemini is replying...'}
+                    {agentState === 'speaking' && 'Echo is replying...'}
                     {agentState === 'listening' && 'Listening to your microphone...'}
                     {agentState === 'idle' && 'Waiting for you to speak'}
                   </span>
@@ -962,9 +962,9 @@ function App() {
           {/* User Session & Multimodal Vision Controllers */}
           <div className="controls-container">
             {sessionState !== 'connected' ? (
-              <button 
-                onClick={startAudioSession} 
-                disabled={sessionState === 'connecting'} 
+              <button
+                onClick={startAudioSession}
+                disabled={sessionState === 'connecting'}
                 className="btn btn-primary"
               >
                 {sessionState === 'connecting' ? 'Establishing Pipeline...' : 'Start Live Session'}
@@ -973,14 +973,14 @@ function App() {
               <div className="controls-stack">
                 {/* Top Row: Camera & Screen Share */}
                 <div className="btn-group">
-                  <button 
-                    onClick={toggleCamera} 
+                  <button
+                    onClick={toggleCamera}
                     className={`btn ${isCameraActive ? 'btn-danger' : 'btn-secondary'}`}
                   >
                     <Camera size={18} /> {isCameraActive ? 'Stop Camera' : 'Camera Share'}
                   </button>
-                  <button 
-                    onClick={toggleScreenShare} 
+                  <button
+                    onClick={toggleScreenShare}
                     className={`btn ${isScreenShareActive ? 'btn-danger' : 'btn-secondary'}`}
                   >
                     <Monitor size={18} /> {isScreenShareActive ? 'Stop Screen' : 'Screen Share'}
@@ -989,8 +989,8 @@ function App() {
 
                 {/* Bottom Row: Mute & Call Cut (Stop Session) */}
                 <div className="btn-group">
-                  <button 
-                    onClick={toggleMute} 
+                  <button
+                    onClick={toggleMute}
                     className={`btn ${isMuted ? 'btn-danger' : 'btn-secondary'}`}
                   >
                     {isMuted ? <MicOff size={18} /> : <Mic size={18} />}
@@ -1012,16 +1012,16 @@ function App() {
                 <span>Live Audio Transcript</span>
               </div>
               <div className="speech-transcript-actions">
-                <button 
-                  onClick={copyTranscriptText} 
+                <button
+                  onClick={copyTranscriptText}
                   className="transcript-btn"
                   title="Copy transcript to clipboard"
                 >
                   <Copy size={13} />
                   <span>{copySuccess ? 'Copied!' : 'Copy'}</span>
                 </button>
-                <button 
-                  onClick={clearTranscripts} 
+                <button
+                  onClick={clearTranscripts}
                   className="transcript-btn"
                   title="Clear transcript history"
                 >
@@ -1038,8 +1038,8 @@ function App() {
                 </div>
               ) : (
                 transcripts.map((t) => (
-                  <div 
-                    key={t.id} 
+                  <div
+                    key={t.id}
                     className={`transcript-bubble transcript-bubble-${t.sender === 'user' ? 'user' : 'ai'}`}
                   >
                     {t.text}
@@ -1058,7 +1058,7 @@ function App() {
           </div>
 
           <div className="card-body telemetry-card">
-            
+
             {/* Micro panel showing JWT RBAC Permissions & Super Admin Status */}
             <div className="telemetry-section">
               <div className="flex items-center justify-between mb-2">
@@ -1112,21 +1112,6 @@ function App() {
               </div>
             </div>
 
-            {/* DB Tools mapping */}
-            <div className="telemetry-section border-t pt-4">
-              <h3>LangChain Tool Priority Rules</h3>
-              <div className="tools-priority-list">
-                <div className="tool-priority-item">
-                  <span className="tool-name">rag_knowledge_search</span>
-                  <span className="badge badge-error py-half">INTERRUPT</span>
-                </div>
-                <div className="tool-priority-item">
-                  <span className="tool-name">query_user_analytics</span>
-                  <span className="badge badge-warning py-half">WHEN_IDLE</span>
-                </div>
-              </div>
-            </div>
-
             {/* Visual raw websocket activity log */}
             <div className="telemetry-section border-t pt-4 flex-grow flex flex-col min-h-0">
               <h3>Stream Activity Logger</h3>
@@ -1150,10 +1135,10 @@ function App() {
       </div>
 
       {/* Knowledge Base Explorer Modal */}
-      <KnowledgeManager 
-        backendUrl={backendUrl} 
-        isOpen={isKmOpen} 
-        onClose={() => setIsKmOpen(false)} 
+      <KnowledgeManager
+        backendUrl={backendUrl}
+        isOpen={isKmOpen}
+        onClose={() => setIsKmOpen(false)}
         onRefresh={fetchDocuments}
       />
 

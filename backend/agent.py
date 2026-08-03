@@ -339,16 +339,44 @@ async def python_code_interpreter(code: str) -> str:
         return err_out
 
 
-# Agent Executor cache
-_agent_executor = None
+def load_system_session_prompt(full_name: Optional[str] = None) -> str:
+    """Loads the system session prompt from prompts/system_session_prompt.md and compiles template variables."""
+    import pathlib
+    prompt_file = pathlib.Path(__file__).parent.parent / "prompts" / "system_session_prompt.md"
+    if prompt_file.exists():
+        content = prompt_file.read_text(encoding="utf-8")
+        if full_name:
+            content = content.replace("{{user.full_name}}", full_name)
+        else:
+            content = content.replace("{{user.full_name}}", "User")
+        return content
+    return ""
 
-def get_agent_executor():
-    """Initializes the LangChain Agent Executor with structured chat tools."""
-    global _agent_executor
-    if _agent_executor is None:
-        logger.info("Initializing LangChain ChatGoogleGenerativeAI and AgentExecutor...")
+
+# Agent Executor cache dictionary keyed by prompt/user
+_agent_executors: Dict[str, Any] = {}
+
+async def fetch_user_full_name(user_id: Optional[uuid.UUID]) -> Optional[str]:
+    """Fetches full_name for a given user ID from PostgreSQL DB."""
+    if not user_id:
+        return None
+    try:
+        pool = await get_db_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT full_name FROM users WHERE id = $1", user_id)
+            if row and row["full_name"]:
+                return row["full_name"]
+    except Exception as err:
+        logger.warning(f"Failed to fetch user full name for ID {user_id}: {err}")
+    return None
+
+def get_agent_executor(full_name: Optional[str] = None):
+    """Initializes the LangChain Agent Executor with system prompt & structured chat tools."""
+    global _agent_executors
+    cache_key = full_name or "default"
+    if cache_key not in _agent_executors:
+        logger.info(f"Initializing LangChain AgentExecutor with prompt for user full_name: '{cache_key}'...")
         
-        # Use the configured Gemini model
         model_name = os.environ.get("GEMINI_LIVE_MODEL", "gemini-1.5-flash")
         
         llm = ChatGoogleGenerativeAI(
@@ -359,23 +387,30 @@ def get_agent_executor():
         
         tools = [query_user_analytics, rag_knowledge_search, web_search, python_code_interpreter]
         
-        _agent_executor = initialize_agent(
+        system_prompt_text = load_system_session_prompt(full_name=full_name)
+        
+        _agent_executors[cache_key] = initialize_agent(
             tools=tools,
             llm=llm,
             agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
             verbose=True,
-            handle_parsing_errors=True
+            handle_parsing_errors=True,
+            agent_kwargs={"prefix": system_prompt_text} if system_prompt_text else {}
         )
-    return _agent_executor
+    return _agent_executors[cache_key]
 
 
 @observe(name="system1-chat-agent", as_type="agent")
 async def run_agent(message: str, user_id: Optional[str] = None, session_id: Optional[str] = None) -> str:
     """
-    Executes the LangChain agent with Langfuse tracing.
+    Executes the LangChain agent with Langfuse tracing and system prompt context.
     """
-    uid = user_id or (str(current_user_id.get()) if current_user_id.get() else "guest")
+    active_user_uuid = current_user_id.get()
+    uid = user_id or (str(active_user_uuid) if active_user_uuid else "guest")
     sid = session_id or f"session-{uuid.uuid4()}"
+
+    # Fetch user's full name for prompt template compilation
+    user_full_name = await fetch_user_full_name(active_user_uuid if active_user_uuid else (uuid.UUID(uid) if uid != "guest" else None))
 
     langfuse_context.update_current_trace(
         name="system1-chat-agent",
@@ -385,13 +420,12 @@ async def run_agent(message: str, user_id: Optional[str] = None, session_id: Opt
         input=message
     )
 
-    # Retrieve the LangChain callback handler registered under the active Langfuse trace
     langfuse_handler = langfuse_context.get_current_langchain_handler()
     callbacks = [langfuse_handler] if langfuse_handler else []
 
-    agent_executor = get_agent_executor()
+    agent_executor = get_agent_executor(full_name=user_full_name)
     
-    logger.info(f"Running agent for query: {message}")
+    logger.info(f"Running agent for user '{user_full_name or 'guest'}' with query: {message}")
     response = await agent_executor.ainvoke(
         {"input": message},
         config={"callbacks": callbacks}
@@ -399,3 +433,4 @@ async def run_agent(message: str, user_id: Optional[str] = None, session_id: Opt
     out_str = response.get("output", "")
     langfuse_context.update_current_trace(output=out_str)
     return out_str
+
