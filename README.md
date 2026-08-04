@@ -175,6 +175,14 @@ EchoStack/
 │   ├── main.py               # FastAPI App & Router Integration
 │   ├── websocket.py          # Gemini Live Speech Proxy & UI Event Multiplexer
 │   └── worker.py             # Kafka Document Processing Worker
+├── test_pipeline/            # Quality Assurance Test Pipeline & Runner
+│   ├── pytest.ini            # Pytest Configuration (Async Mode, Markers & Logs)
+│   ├── logging_plugin.py     # Custom Pytest Plugin for Detailed Failure Error Logs
+│   ├── conftest.py           # Async Fixtures, DB/Redis Mocks, Token Generators
+│   ├── run_pipeline.py       # Central CLI Pipeline Test Runner
+│   ├── unit/                 # Core Functions & Auth Unit Tests
+│   ├── api/                  # REST API & RBAC Endpoint Tests
+│   └── integration/          # AI Agent & WebSocket Speech Proxy Tests
 ├── frontend/                 # React 18 Web Application
 │   ├── src/
 │   │   ├── App.jsx           # Multimodal Workspace Dashboard & Card Listener
@@ -256,21 +264,37 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 
 ---
 
-## 🧪 System Verification & Testing
+## 🧪 System Verification & Quality Assurance Pipeline
 
-### Automated Test Suite
-Run backend unit, integration, and dual-payload protocol tests:
+### Quality Assurance Test Pipeline (`test_pipeline/`)
+Run real-world unit, API contract, integration, and WebSocket protocol tests with formatted failure error logging:
+
 ```bash
-# Run pytest test suite
-poetry run pytest
+# Run complete test pipeline (All Suites)
+poetry run python test_pipeline/run_pipeline.py
 
-# Run Phase 11 Dual-Payload Protocol verification
-poetry run python scripts/test_phase11_dual_payload.py
+# Target specific test suites (unit | api | integration | websocket)
+poetry run python test_pipeline/run_pipeline.py --suite api
+poetry run python test_pipeline/run_pipeline.py --suite unit
+poetry run python test_pipeline/run_pipeline.py --suite integration
+poetry run python test_pipeline/run_pipeline.py --suite websocket
+
+# Enable fail-fast (-x) and verbose (-v) output
+poetry run python test_pipeline/run_pipeline.py -x -v
 ```
 
-### Trigger PySpark Analytics Job
-Manually execute the background PySpark ETL analytics pipeline:
+### Detailed Failure Logging
+If any test fails, the custom `FailureLoggerPlugin` (`test_pipeline/logging_plugin.py`) automatically catches the failure and prints structured error logs containing:
+- Test Node ID, file path, and execution phase.
+- Exception class, message, and formatted stack traceback.
+- Captured stdout/stderr streams and request/response payloads.
+
+### Legacy Verification Scripts
 ```bash
+# Run Phase 11 Dual-Payload Protocol verification script
+poetry run python scripts/test_phase11_dual_payload.py
+
+# Trigger background PySpark ETL analytics job
 poetry run python backend/analytics_job.py
 ```
 
