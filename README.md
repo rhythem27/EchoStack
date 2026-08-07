@@ -15,17 +15,27 @@
 
 ---
 
-## 🎬 Real-Time Multimodal Demo
+## 🖥️ Live Portal & Interface Overview
 
-![EchoStack Platform Demo](https://raw.githubusercontent.com/rhythem27/EchoStack/main/reference/demo_preview.webp)
+![EchoStack Live Workspace Portal](./reference/dashboard_preview.png)
 
-> **Live Multimodal Interaction**: Low-latency bidirectional speech streaming, real-time webcam frame processing with spatial object detection overlays, hybrid RAG document search, and background PySpark ETL analytics.
+### 🌟 Project Introduction
+
+**EchoStack** is an enterprise-grade agentic AI ecosystem engineered for real-time bidirectional speech-to-speech interaction, intelligent knowledge retrieval (RAG), dynamic Generative UI, and scalable distributed data analytics.
+
+By combining Gemini Live's real-time streaming capabilities with robust enterprise data pipelines (Apache Kafka, PySpark, PostgreSQL `pgvector`, Redis), EchoStack provides a unified control center for autonomous voice agents, multi-modal vision inspection, and enterprise knowledge indexing.
+
+#### Core Platform Capabilities:
+- 🎙️ **Sub-Second Speech-to-Speech Streaming**: Low-latency WebSocket audio proxy with 16kHz PCM downsampling and 24kHz high-fidelity speech synthesis.
+- 📚 **Knowledge Retrieval & Document Ingestion (RAG)**: Multi-format parsing (`.pdf`, `.docx`, `.txt`, `.csv`, `.md`, `.pptx`) with Kafka event workers and Reciprocal Rank Fusion (RRF) vector search.
+- 🛡️ **Enterprise Role-Based Access Control (RBAC)**: Fine-grained token management and sub-millisecond Redis permission caching (`Super Admin`, `Admin`, `User`).
+- 📊 **Generative UI & Analytics Dashboard**: Voice-driven UI component rendering coupled with PySpark batch analytics and end-to-end Langfuse telemetry.
 
 ---
 
 ## 📌 Executive Summary
 
-**EchoStack** is an enterprise-grade agent platform engineered for ultra-low latency multimodal interaction, knowledge retrieval, and analytics. It bridges modern AI capabilities (speech-to-speech, vision analysis, hybrid RAG) with distributed data infrastructure (Apache Kafka, PySpark, PostgreSQL `pgvector`, Redis).
+**EchoStack** bridges modern AI capabilities (speech-to-speech, vision analysis, hybrid RAG) with distributed data infrastructure (Apache Kafka, PySpark, PostgreSQL `pgvector`, Redis).
 
 ### Architecture Highlights:
 - **Dual-Agent Architecture**:
